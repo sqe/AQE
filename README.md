@@ -1,10 +1,10 @@
-# QELLM - Agentic Quality Engineering Platform
+# AQE - Agentic Quality Engineering Platform
 
-QELLM is a comprehensive, AI-powered Quality Engineering platform that automates end-to-end testing workflows using agentic architecture and RAG (Retrieval-Augmented Generation) capabilities.
+AQE is a comprehensive, AI-powered Quality Engineering platform that automates end-to-end testing workflows using agentic architecture and RAG (Retrieval-Augmented Generation) capabilities.
 
 ## Architecture Overview
 
-QELLM provides a complete end-to-end testing automation pipeline that combines:
+AQE provides a complete end-to-end testing automation pipeline that combines:
 - Web state capture and change detection
 - AI-powered test generation using RAG
 - Automated test execution with persistence
@@ -78,7 +78,7 @@ QELLM provides a complete end-to-end testing automation pipeline that combines:
 
 ### Frontend Service
 
-- **QELLM Frontend** (`3000`) - Interactive dashboard for orchestrating QA workflows
+- **AQE Frontend** (`3000`) - Interactive dashboard for orchestrating QA workflows
 
 ## Key Features
 
@@ -119,8 +119,8 @@ QELLM provides a complete end-to-end testing automation pipeline that combines:
 
 1. **Clone the repository:**
 ```bash
-git clone <repository-url>
-cd qellm
+git clone https://github.com/sqe/AQE.git
+cd AQE
 ```
 
 2. **Start all services:**
