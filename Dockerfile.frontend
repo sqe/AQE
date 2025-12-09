@@ -1,0 +1,13 @@
+# Use a minimal Nginx image to serve static files
+FROM nginx:alpine
+
+# Remove default nginx html directory
+RUN rm -rf /usr/share/nginx/html/*
+
+# Copy the frontend application files into the default Nginx webroot
+# The entry point will be app.jsx, which the canvas environment will render.
+# In a standard React build, this would contain the compiled index.html and assets.
+COPY frontend/ /usr/share/nginx/html/
+
+# Expose port 80 (Nginx default)
+EXPOSE 80

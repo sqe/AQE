@@ -1,0 +1,52 @@
+# --- Stage 1: Dependency Builder (builder) ---
+    FROM python:3.12-slim as builder
+
+    # Set environment variables
+    ENV PYTHONDONTWRITEBYTECODE 1
+    ENV PYTHONUNBUFFERED 1
+    
+    # Install necessary system packages for compiling Python packages (like psycopg2)
+    RUN apt-get update && apt-get install -y \
+        build-essential \
+        libpq-dev \
+        gcc \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Set the working directory for dependencies
+    WORKDIR /tmp/deps
+    
+    # Copy requirements.txt 
+    COPY requirements.txt .
+    
+    # Install dependencies
+    RUN pip install --upgrade pip
+    RUN pip install -r requirements.txt --break-system-packages
+    
+    # --- Stage 2: Final Production Image (production) ---
+    FROM python:3.12-slim as production
+    
+    # Install Playwright dependencies. These specific packages are required for headless Chromium.
+    RUN apt-get update && apt-get install -y \
+        libnss3 libfontconfig1 libgbm1 libxcomposite1 \
+        libatk1.0-0 libatk-bridge2.0-0 libgtk-3-0 \
+        libgdk-pixbuf-xlib-2.0-0 libnotify4 libnspr4 \
+        libdbus-glib-1-2 libasound2 libexpat1 \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Set the working directory
+    WORKDIR /app
+    
+    # Copy installed dependencies from the builder stage
+    COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+    
+    # Copy the application code. This step copies 'run_agent.sh' into '/app'.
+    COPY . /app
+    
+    # Install Playwright browser binaries by invoking it as a Python module
+    RUN python -m playwright install --with-deps chromium
+    
+    # Ensure the agent startup script is executable
+    RUN chmod +x /app/run_agent.sh
+    
+    # Set the entrypoint
+    ENTRYPOINT ["/app/run_agent.sh"]

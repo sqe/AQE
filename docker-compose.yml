@@ -1,0 +1,271 @@
+version: '3.8'
+
+# Defines the shared base image build process for Python dependencies
+x-base-build: &base-build
+  context: .
+  dockerfile: Dockerfile.base
+  target: production
+
+services:
+  # --- Infrastructure Services ---
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: qe_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+    volumes:
+      # Use a volume for data persistence
+      - postgres_data:/var/lib/postgresql/data
+      # Initialize the schema using the artifact_metadata.sql script
+      - ./utils/db_setup/artifact_metadata.sql:/docker-entrypoint-initdb.d/artifact_metadata.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d qe_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_BUCKET: agentic-qe-artifacts # Pre-create the bucket
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000" # API port
+      - "9001:9001" # Console port
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333" # GRPC/HTTP API
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- REDIS CACHE SERVICE ---
+  redis:
+    image: redis:7.0-alpine
+    container_name: redis_cache
+    hostname: redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data 
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  # --- END REDIS SERVICE ---
+
+  # 1. Zookeeper Service
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      # Required environment variables for ZooKeeper
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    restart: always
+
+  # 2. Kafka Service (configured to use Zookeeper)
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper  # Ensure ZooKeeper starts before Kafka
+    environment:
+      # Configure Kafka where to find the Zookeeper service (using the service name 'zookeeper' and port 2181)
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181 
+      # Define the broker ID (must be unique if you have more than one broker)
+      KAFKA_BROKER_ID: 1
+      # Define listeners
+      KAFKA_LISTENERS: PLAINTEXT://:9092
+      # Define advertised listeners for external connections
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      # Other standard settings
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    restart: always
+    
+  # --- Application Agents (Using Dockerfile.agent - includes Playwright) ---
+  
+  # NEW: 0. Artifact Management Agent (Handles PostgreSQL schema and MinIO versioning)
+  artifact_management_agent:
+    build:
+      <<: *base-build
+      dockerfile: Dockerfile.agent
+    container_name: artifact_management_agent
+    environment:
+      AGENT_PORT: 8007
+      AGENT_MODULE: agents.artifact_management_agent
+      POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
+      MINIO_ENDPOINT: minio:9000
+      REDIS_HOST: redis
+    command: /app/run_agent.sh agents.artifact_management_agent AGENT_PORT
+    ports:
+      - "8007:8007"
+    depends_on: [postgres, minio, redis]
+
+  # 1. Orchestrator
+  change_detection_agent:
+    build:
+      <<: *base-build
+      dockerfile: Dockerfile.agent
+    container_name: change_detection_agent
+    environment:
+      AGENT_PORT: 8000
+      AGENT_MODULE: agents.change_detection_agent
+      POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
+      MINIO_ENDPOINT: minio:9000
+      QDRANT_HOST: qdrant
+      KAFKA_BROKER: kafka:9092
+      REDIS_HOST: redis # Added Redis host
+    command: /app/run_agent.sh agents.change_detection_agent AGENT_PORT
+    ports:
+      - "8000:8000"
+    depends_on: [postgres, minio, qdrant, kafka, redis, artifact_management_agent] # Added artifact_management_agent dependency
+
+  # 2. Test Generation Agent
+  test_generation_agent:
+    build:
+      <<: *base-build
+      dockerfile: Dockerfile.agent
+    container_name: test_generation_agent_multi_llm
+    environment:
+      AGENT_PORT: 8001
+      AGENT_MODULE: agents.test_generation_agent_multi_llm
+      POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
+      MINIO_ENDPOINT: minio:9000
+      QDRANT_HOST: qdrant
+      KAFKA_BROKER: kafka:9092
+      REDIS_HOST: redis # Added Redis host
+    command: /app/run_agent.sh agents.test_generation_agent_multi_llm AGENT_PORT
+    ports:
+      - "8001:8001"
+    depends_on: [postgres, minio, qdrant, kafka, redis, artifact_management_agent] # Added artifact_management_agent dependency
+  
+  # 3. Webpage State Capture Agent (New)
+  webpage_state_capture_agent:
+    build:
+      <<: *base-build
+      dockerfile: Dockerfile.agent
+    container_name: webpage_state_capture_agent
+    environment:
+      AGENT_PORT: 8002
+      AGENT_MODULE: agents.webpage_state_capture_agent
+      POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
+      MINIO_ENDPOINT: minio:9000
+      REDIS_HOST: redis # Added Redis host
+    command: /app/run_agent.sh agents.webpage_state_capture_agent AGENT_PORT
+    ports:
+      - "8002:8002"
+    depends_on: [postgres, minio, redis, artifact_management_agent] # Added artifact_management_agent dependency
+
+  # 4. Test Execution Agent (New)
+  test_execution_agent:
+    # --- CRITICAL FIX: Point to the specialized build context ---
+    build:
+      context: .
+      dockerfile: ./test_execution_agent/Dockerfile
+    container_name: test_execution_agent
+    environment:
+      AGENT_PORT: 8003
+      AGENT_MODULE: agents.test_execution_agent
+      KAFKA_BROKER: kafka:9092
+      # CRITICAL: Add DB/MinIO config so the agent can fetch the test code
+      POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
+      MINIO_ENDPOINT: minio:9000
+    # Command change: Running the agent file directly from the new image
+    command: python test_execution_agent.py 
+    ports:
+      - "8003:8003"
+    # CRITICAL: Add dependencies to Postgres and MinIO
+    depends_on: [kafka, postgres, minio]
+    # --- END CRITICAL FIX ---
+
+  # 5. Knowledge Ingestion Agent
+  llm_fine_tuning_agent:
+    build:
+      <<: *base-build
+      dockerfile: Dockerfile.agent
+    container_name: llm_fine_tuning_agent
+    environment:
+      AGENT_PORT: 8004
+      AGENT_MODULE: agents.llm_fine_tuning_agent
+      POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
+      MINIO_ENDPOINT: minio:9000
+      QDRANT_HOST: qdrant
+      REDIS_HOST: redis # Added Redis host
+    command: /app/run_agent.sh agents.llm_fine_tuning_agent AGENT_PORT
+    ports:
+      - "8004:8004"
+    depends_on: [postgres, minio, qdrant, redis, artifact_management_agent] # Added artifact_management_agent dependency
+
+  # --- Application Worker (Using Dockerfile.worker - Kafka Consumer) ---
+  test_reporting_service:
+    build:
+      context: .  
+      dockerfile: Dockerfile.reporting 
+    container_name: test_reporting_service
+    depends_on:
+      - kafka
+      - postgres 
+    environment:
+      KAFKA_BROKER: kafka:9092
+      POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
+    restart: always
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: qellm-frontend
+    ports:
+      - "3000:80" 
+    volumes:
+      # This is critical for development: it ensures Nginx uses the latest version 
+      # of your app.jsx file without rebuilding the container every time.
+      - ./frontend:/usr/share/nginx/html/ 
+    networks:
+      - qellm-net # Use the same network as your agents
+
+# ------------------------------------
+# 3. GLOBAL NETWORK DEFINITION 
+# ------------------------------------
+networks:
+  qellm-net:
+    driver: bridge # This creates the network for all services to use
+
+volumes:
+  postgres_data:
+  minio_data:
+  qdrant_data:
+  redis_data: # ADDED: Volume for persistent Redis data

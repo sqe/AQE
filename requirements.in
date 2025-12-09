@@ -1,0 +1,17 @@
+asyncpg               # PostgreSQL client
+minio                 # MinIO object storage client
+qdrant-client         # Vector database client
+httpx
+python-dotenv
+redis
+minio
+aiokafka
+a2a-sdk[http-server]
+PyGithub
+playwright
+uvicorn
+click
+starlette
+sse-starlette
+psycopg2
+pytest

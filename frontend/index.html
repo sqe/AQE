@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AQE Frontend App</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Apply Inter font */
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; }
+        #root { min-height: 100vh; display: flex; justify-content: center; align-items: center; }
+    </style>
+</head>
+<body>
+    <!-- This is the container where your React app will be mounted -->
+    <div id="root">
+        <div class="text-center p-8 bg-white rounded-xl shadow-2xl">
+            <h1 class="text-3xl font-bold text-gray-800">Loading AQE Frontend...</h1>
+            <p class="mt-2 text-gray-500">If this persists, check console for React/Babel errors.</p>
+        </div>
+    </div>
+
+    <!-- 1. Load React and ReactDOM (required for the app to work) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- 2. Load Babel (required to transform JSX code into browser JavaScript) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- 3. Load your app.jsx file -->
+    <!-- CRITICAL: The type="text/babel" tells Babel to process this script -->
+    <script type="text/babel" src="app.jsx"></script>
+</body>
+</html>
