@@ -9,7 +9,7 @@ import json
 import datetime
 import uuid
 from typing import Dict, Any, Tuple, Optional, List
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 import httpx 
 from utils.agent_ontology import select_ontology_context
 from utils.object_store import ObjectStore
@@ -57,8 +57,12 @@ LLM_PROVIDER_MODE = os.environ.get("LLM_PROVIDER_MODE", "SELF_HOSTED").upper()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # Self-Hosted/LM Studio Endpoints (Only used if LLM_PROVIDER_MODE is 'SELF_HOSTED')
-LLM_EMBEDDING_ENDPOINT = os.environ.get("LLM_EMBEDDING_ENDPOINT", "http://192.168.1.3:1234/v1/embeddings")
-LLM_GENERATION_ENDPOINT = os.environ.get("LLM_GENERATION_ENDPOINT", "http://192.168.1.3:1234/v1/completions")
+LLM_EMBEDDING_ENDPOINT = os.environ.get("LLM_EMBEDDING_ENDPOINT", "")
+LLM_GENERATION_ENDPOINT = os.environ.get("LLM_GENERATION_ENDPOINT", "")
+LLM_EMBEDDING_MODEL = os.environ.get("LLM_EMBEDDING_MODEL", "")
+LLM_GENERATION_MODEL = os.environ.get("LLM_GENERATION_MODEL", "")
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "300"))
+LLM_REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "none")
 GRAPH_API_URL = os.environ.get("GRAPH_API_URL", "http://diagnostics_agent:8006/v1/graph/events")
 EMBEDDING_DIMENSION = 384 
 
@@ -73,7 +77,10 @@ class LLMServiceClient:
     def __init__(self, mode: str, api_key: str):
         self.mode = mode
         self.api_key = api_key 
-        self.client = httpx.AsyncClient(timeout=60.0, limits=httpx.Limits(max_keepalive_connections=5, max_connections=10))
+        self.client = httpx.AsyncClient(
+            timeout=LLM_TIMEOUT_SECONDS,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
         logger.info(f"LLM Service Client initialized in mode: {mode}")
 
     async def close(self):
@@ -84,7 +91,11 @@ class LLMServiceClient:
         """Calls the configured embedding model asynchronously."""
         if self.mode == 'GEMINI':
             url = f"{GEMINI_API_BASE_URL}/models/{GEMINI_EMBEDDING_MODEL}:embedContent?key={self.api_key}"
-            payload = {"model": GEMINI_EMBEDDING_MODEL, "content": {"parts": [{"text": text}]}}
+            payload = {
+                "model": GEMINI_EMBEDDING_MODEL,
+                "content": {"parts": [{"text": text}]},
+                "outputDimensionality": EMBEDDING_DIMENSION,
+            }
             
             try:
                 response = await self.client.post(url, json=payload)
@@ -96,13 +107,24 @@ class LLMServiceClient:
         
         else: # SELF_HOSTED
             try:
-                response = await self.client.post(LLM_EMBEDDING_ENDPOINT, json={"input": text})
+                if not LLM_EMBEDDING_ENDPOINT:
+                    raise RuntimeError("LLM_EMBEDDING_ENDPOINT is not configured")
+                payload = {"input": text}
+                if LLM_EMBEDDING_MODEL:
+                    payload["model"] = LLM_EMBEDDING_MODEL
+                response = await self.client.post(LLM_EMBEDDING_ENDPOINT, json=payload)
                 response.raise_for_status()
                 result_json = response.json()
                 if 'data' in result_json and result_json['data']:
-                    return result_json['data'][0].get("embedding", [0.0] * EMBEDDING_DIMENSION)
-                
-                return result_json.get("vector", [0.0] * EMBEDDING_DIMENSION)
+                    embedding = result_json['data'][0].get("embedding", [])
+                else:
+                    embedding = result_json.get("vector", [])
+                if len(embedding) < EMBEDDING_DIMENSION:
+                    raise RuntimeError(
+                        f"Embedding model returned {len(embedding)} dimensions; "
+                        f"AQE requires at least {EMBEDDING_DIMENSION}"
+                    )
+                return embedding[:EMBEDDING_DIMENSION]
             except Exception as e:
                 logger.error(f"Self-Hosted Embedding error: {e}")
                 raise
@@ -127,18 +149,29 @@ class LLMServiceClient:
 
         else: # SELF_HOSTED
             try:
-                # Common V1 OpenAI style API payload for completions (used by LM Studio)
-                payload = {
-                    "prompt": prompt, 
-                    "max_tokens": 2048, 
-                    "temperature": 0.1,
-                }
+                if not LLM_GENERATION_ENDPOINT:
+                    raise RuntimeError("LLM_GENERATION_ENDPOINT is not configured")
+                if LLM_GENERATION_ENDPOINT.rstrip("/").endswith("/chat/completions"):
+                    payload = {
+                        "messages": [{"role": "user", "content": f"/no_think\n{prompt}"}],
+                        "max_tokens": 4096,
+                        "temperature": 0.1,
+                        "reasoning_effort": LLM_REASONING_EFFORT,
+                    }
+                else:
+                    payload = {"prompt": prompt, "max_tokens": 4096, "temperature": 0.1}
+                if LLM_GENERATION_MODEL:
+                    payload["model"] = LLM_GENERATION_MODEL
                 
                 response = await self.client.post(LLM_GENERATION_ENDPOINT, json=payload)
                 response.raise_for_status()
                 result_json = response.json()
-                # Assuming the self-hosted model returns 'choices[0].text'
-                text = result_json.get("choices", [{}])[0].get("text", "# LLM generation failed or returned empty.")
+                choice = result_json.get("choices", [{}])[0]
+                text = choice.get("text") or choice.get("message", {}).get("content")
+                if not text:
+                    raise RuntimeError(
+                        f"LLM generation returned no content (finish_reason={choice.get('finish_reason')})"
+                    )
                 return text
             
             except Exception as e:
@@ -273,6 +306,14 @@ class TestGenerationAgentLogic:
             return QDRANT_CLIENT.search(
                 collection_name=COLLECTION_NAME,
                 query_vector=query_vector,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="source",
+                            match=models.MatchValue(value="product_knowledge"),
+                        )
+                    ]
+                ),
                 limit=3
             )
 
@@ -425,11 +466,14 @@ class TestGenerationAgentLogic:
         Generates production-ready Python for one explicitly selected test runtime.
         """
         rag_artifact_type = "RAG_KNOWLEDGE_BASE" 
-        version_id = "ERROR" 
+        version_id = "UNAVAILABLE"
 
         try:
-            version_id, object_path = await self._get_artifact_metadata(rag_artifact_type)
-            rag_data = await self._fetch_artifact(object_path)
+            try:
+                version_id, object_path = await self._get_artifact_metadata(rag_artifact_type)
+                await self._fetch_artifact(object_path)
+            except FileNotFoundError:
+                logger.info("No product RAG artifact is active; generating from the scenario and ontology.")
 
             target_url = captured_state.get('url', 'N/A')
             test_spec = captured_state.get('spec', 'Run general tests.')
@@ -439,6 +483,8 @@ class TestGenerationAgentLogic:
             agent_skills = captured_state.get("skills", target_agent.get("skills", []))
             test_type = resolve_test_type(captured_state)
             source_analysis = captured_state.get("source_analysis") or {}
+            agent_discovery = captured_state.get("agent_discovery") or {}
+            refined_requirements = captured_state.get("refined_requirements") or []
             
             query_context = (
                 f"Generate test for URL {target_url} based on spec: '{test_spec}'. "
@@ -489,6 +535,10 @@ class TestGenerationAgentLogic:
             Target Agent: {json.dumps(target_agent, default=str)}
             Agent Card URL: {agent_card_url or "Not supplied"}
             Declared Agent Skills: {json.dumps(agent_skills, default=str)}
+            Discovered Agent Contracts and Evaluation Scenarios:
+            {json.dumps(agent_discovery, default=str)}
+            Refined Requirements and Expected Outcomes:
+            {json.dumps(refined_requirements, default=str)}
             GitHub Source Analysis (candidate evidence, not a confirmed defect):
             {json.dumps(source_analysis, default=str)}
             Test Objective/Specification: {test_spec}
@@ -516,14 +566,9 @@ class TestGenerationAgentLogic:
                 "artifact_version_used": version_id
             }
 
-        except FileNotFoundError:
-            error_message = f"# Error: RAG artifact {rag_artifact_type} not found in DB. Cannot generate grounded tests."
-            return {
-                "test_code": error_message,
-                "artifact_version_used": "UNAVAILABLE"
-            }
         except Exception as e:
-            error_message = f"# Error: Failed during generation pipeline (RAG Version: {version_id}). Details: {str(e)}" 
+            detail = str(e) or type(e).__name__
+            error_message = f"# Error: Failed during generation pipeline (RAG Version: {version_id}). Details: {detail}"
             logger.error(error_message, exc_info=True)
             return {
                 "test_code": error_message,

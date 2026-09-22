@@ -38,4 +38,10 @@ spec:
         - ipBlock: {cidr: 0.0.0.0/0}
       ports:
         - {protocol: TCP, port: 443}
+    {{- with .Values.networkPolicy.llmEgressCidr }}
+    - to:
+        - ipBlock: {cidr: {{ . | quote }}}
+      ports:
+        - {protocol: TCP, port: {{ $.Values.networkPolicy.llmEgressPort }}}
+    {{- end }}
 {{- end }}

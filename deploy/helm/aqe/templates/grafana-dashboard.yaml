@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aqe-grafana-dashboard
+  labels:
+    grafana_dashboard: "1"
+data:
+  aqe-overview.json: |-
+    {
+      "title": "AQE Agentic QE Automata",
+      "uid": "aqe-automata",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": {"from": "now-6h", "to": "now"},
+      "panels": [
+        {"id":1,"type":"stat","title":"Release evaluation score","gridPos":{"x":0,"y":0,"w":6,"h":4},"targets":[{"expr":"avg(aqe_model_evaluation_score)","legendFormat":"score"}]},
+        {"id":2,"type":"stat","title":"Semantic golden score","gridPos":{"x":6,"y":0,"w":6,"h":4},"targets":[{"expr":"avg(aqe_model_semantic_score)","legendFormat":"semantic"}]},
+        {"id":3,"type":"stat","title":"Mean model latency (ms)","gridPos":{"x":12,"y":0,"w":6,"h":4},"targets":[{"expr":"avg(aqe_model_evaluation_average_latency_ms)","legendFormat":"latency"}]},
+        {"id":4,"type":"stat","title":"Golden cases","gridPos":{"x":18,"y":0,"w":6,"h":4},"targets":[{"expr":"sum by (result) (aqe_model_evaluation_cases)","legendFormat":"{{ "{{result}}" }}"}]},
+        {"id":5,"type":"timeseries","title":"Agent request rate","gridPos":{"x":0,"y":4,"w":12,"h":8},"targets":[{"expr":"sum by (service) (rate(aqe_http_requests_total[5m]))","legendFormat":"{{ "{{service}}" }}"}]},
+        {"id":6,"type":"timeseries","title":"Agent p95 latency","gridPos":{"x":12,"y":4,"w":12,"h":8},"targets":[{"expr":"histogram_quantile(0.95, sum by (le, service) (rate(aqe_http_request_duration_seconds_bucket[5m])))","legendFormat":"{{ "{{service}}" }}"}]},
+        {"id":7,"type":"timeseries","title":"HTTP errors","gridPos":{"x":0,"y":12,"w":12,"h":8},"targets":[{"expr":"sum by (service, status) (rate(aqe_http_requests_total{status=~\"4..|5..\"}[5m]))","legendFormat":"{{ "{{service}} {{status}}" }}"}]},
+        {"id":8,"type":"timeseries","title":"Requests in progress","gridPos":{"x":12,"y":12,"w":12,"h":8},"targets":[{"expr":"sum by (service) (aqe_http_requests_in_progress)","legendFormat":"{{ "{{service}}" }}"}]}
+      ]
+    }

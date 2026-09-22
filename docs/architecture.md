@@ -96,10 +96,13 @@ not mislabeled internal agents.
 flowchart TB
     subgraph Repository[AQE repository]
         subgraph Agents[agents/ — independent image boundaries]
+            AB[agent_builder]
             A[artifact_management]
             C[change_detection]
+            DBT[dbt_builder]
             D[diagnostics]
             GA[github_analysis]
+            GX[github_connector]
             GC[github_commit]
             K[knowledge_ingestion]
             TG[test_generation]
@@ -122,6 +125,36 @@ flowchart TB
     Chart --> GitOps
     GitOps --> Cluster[agentic-kubernetes-platform cluster]
 ```
+
+### Review-only builder boundary
+
+The experimental agent and dbt builders are governed artifact generators, not
+deployment controllers. Generated content cannot cross directly into Git,
+Kubernetes, an analytics warehouse, or the execution fleet.
+
+```mermaid
+flowchart LR
+    Specs[Case study, refined documents, or pinned source evidence] --> Choose{Requested artifact}
+    Choose -->|HTTP/A2A agent| AgentBuilder[Experimental agent builder]
+    Choose -->|Analytics project| DbtBuilder[dbt builder]
+    Inventory[Declared source tables, columns, definitions, dialect] --> DbtBuilder
+    Model[Configured generation model] --> AgentBuilder
+    Model --> DbtBuilder
+    AgentBuilder --> AgentGate[Python parse, atomic-test policy, exact deps, non-root image, Agent Card]
+    DbtBuilder --> DbtGate[Safe paths, YAML, read-only SQL, model layers, data tests]
+    AgentGate -->|pass| AgentZip[(RustFS agent ZIP + REVIEW_REQUIRED)]
+    DbtGate -->|pass| DbtZip[(RustFS dbt ZIP + REVIEW_REQUIRED)]
+    AgentGate -->|fail| Reject[Structured rejection]
+    DbtGate -->|fail| Reject
+    AgentZip --> Human[Human review and normal pull request]
+    DbtZip --> Human
+    Human --> TargetTests[Target-specific sandbox or dbt CI]
+```
+
+Neither builder owns automatic publication or deployment. The dbt builder does
+not receive warehouse credentials, introspect a live warehouse, run `dbt`, or
+invent undeclared source columns. The agent builder may inspect only a pinned,
+allowlisted repository through the existing read-only source-analysis boundary.
 
 The default NetworkPolicy permits AQE-internal calls, DNS, explicit platform
 dependency ports, Kafka in `messaging`, Temporal/RustFS service ports, and HTTPS

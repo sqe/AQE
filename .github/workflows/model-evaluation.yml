@@ -4,16 +4,26 @@ on:
   schedule:
     - cron: "17 7 * * *"
   workflow_dispatch: {}
+  workflow_call:
+    secrets:
+      EVAL_MODEL_URL: {required: false}
+      EVAL_MODEL_API_KEY: {required: false}
+      EVAL_RESULTS_URL: {required: false}
 
 permissions: {contents: read}
 
 jobs:
   golden-set:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.EVAL_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     env:
       EVAL_MODEL_URL: ${{ secrets.EVAL_MODEL_URL }}
       EVAL_MODEL_API_KEY: ${{ secrets.EVAL_MODEL_API_KEY }}
       EVAL_MODEL_NAME: ${{ vars.EVAL_MODEL_NAME }}
+      EVAL_RESULTS_URL: ${{ secrets.EVAL_RESULTS_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,7 +31,19 @@ jobs:
       - run: pip install httpx
       - name: Evaluate configured model
         if: ${{ env.EVAL_MODEL_URL != '' }}
-        run: python evaluation/run.py --live --minimum-score 0.8
+        run: >-
+          python evaluation/run.py --live --minimum-score 0.8
+          --shard-index ${{ matrix.shard }} --shard-count 10
+          --output evaluation-result-${{ matrix.shard }}.json
       - name: Validate golden dataset when no model secret is configured
         if: ${{ env.EVAL_MODEL_URL == '' }}
-        run: python evaluation/run.py --minimum-score 1.0
+        run: >-
+          python evaluation/run.py --minimum-score 1.0
+          --shard-index ${{ matrix.shard }} --shard-count 10
+          --output evaluation-result-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: model-evaluation-shard-${{ matrix.shard }}
+          path: evaluation-result-${{ matrix.shard }}.json
+          if-no-files-found: warn

@@ -6,10 +6,13 @@ config:
   kafkaBootstrapServers: kafka.messaging.svc:9092
   temporalAddress: temporal-frontend.temporal.svc:7233
   registryUrl: http://platform-agentic-platform-registry.agentic-platform.svc:8001
+  githubSourceAllowedRepositories: sqe/platformrnd
 networkPolicy:
   enabled: true
   infrastructureNamespace: agentic-platform
   messagingNamespace: messaging
+  llmEgressCidr: 192.168.1.21/32
+  llmEgressPort: 1234
 tolerations:
   - key: node-role.kubernetes.io/control-plane
     operator: Exists

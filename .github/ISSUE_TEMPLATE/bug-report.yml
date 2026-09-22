@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible AQE defect
+title: "[Bug]: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, tokens, customer data, or private agent payloads.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Component
+      options:
+        - Agent orchestration / Temporal
+        - Test generation
+        - Agent test execution
+        - Website test execution
+        - Diagnostics / observability
+        - GitHub integration
+        - Helm / Argo CD
+        - UI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest deterministic sequence that demonstrates the defect.
+      placeholder: Version or image digest, target type, commands, and observed output
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe one observable expected outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Add relevant logs, traces, screenshots, or links to CI runs.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed secrets and sensitive target data.
+          required: true
+        - label: I searched for an existing issue.
+          required: true

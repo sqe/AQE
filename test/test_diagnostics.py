@@ -59,3 +59,52 @@ def test_generated_test_event_adds_graph_node():
     graph = agent._base_graph({"agents": []})
 
     assert any(node["id"] == "test:task-42" for node in graph["nodes"])
+
+
+def test_discovery_uses_declared_expected_response_as_oracle():
+    scenarios = agent._evaluation_scenarios(
+        {
+            "skills": [{"id": "teach.explain", "examples": ["Explain gravity"]}],
+            "evaluation": {
+                "cases": [
+                    {
+                        "skill_id": "teach.explain",
+                        "prompt": "Explain gravity",
+                        "expected_response": "Masses attract each other.",
+                    }
+                ]
+            },
+        },
+        default_max_latency_ms=3000,
+        default_min_accuracy=0.9,
+    )
+
+    assert scenarios[0]["evaluation_mode"] == "semantic_accuracy"
+
+
+def test_discovery_marks_missing_domain_oracle():
+    scenarios = agent._evaluation_scenarios(
+        {"skills": [{"id": "finance.quote", "examples": ["Quote policy 42"]}]},
+        default_max_latency_ms=3000,
+        default_min_accuracy=0.9,
+    )
+
+    assert scenarios[0]["oracle_status"] == "requirements_needed"
+
+
+def test_evaluation_metrics_preserve_release_shard():
+    asyncio.run(
+        agent.record_evaluation(
+            {
+                "score": 0.9,
+                "semantic_score": 0.85,
+                "average_latency_ms": 420,
+                "passed": 9,
+                "total": 10,
+                "shard_index": 7,
+                "shard_count": 10,
+            }
+        )
+    )
+
+    assert agent.LATEST_EVALUATION["shard_index"] == 7

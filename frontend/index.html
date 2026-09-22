@@ -36,12 +36,14 @@
     button.ghost { color:var(--green); background:transparent; padding:5px 9px; font-size:11px; }
     .command-row { display:flex; align-items:center; justify-content:space-between; gap:20px; margin-top:8px; }
     .inline-fields { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .example-row { display:flex; gap:8px; margin:4px 0; }
+    .example-row button { flex:1; }
     .toggle { color:var(--green); margin:0; }
     .toggle input { width:auto; accent-color:var(--green); }
     .fleet-summary { display:flex; align-items:baseline; gap:12px; margin-bottom:16px; }
     .fleet-summary strong { color:#d6ffdc; font-size:36px; font-weight:400; }
     .fleet-summary span { color:var(--dim); }
-    .agent-list { border-top:1px solid var(--line); max-height:330px; overflow:auto; }
+    .agent-list { border-top:1px solid var(--line); }
     .agent-row { display:grid; grid-template-columns:1fr auto; gap:2px 16px; padding:11px 0; border-bottom:1px solid var(--line); }
     .agent-row b,.agent-row small { display:block; }
     .agent-row p { grid-column:1/-1; color:var(--danger); font-size:11px; margin:6px 0 0; }
@@ -54,8 +56,8 @@
     .events { list-style:none; padding:0; margin:0; }
     .events li { display:grid; grid-template-columns:30px 1fr; border-bottom:1px solid var(--line); padding:9px 0; }
     .events time { color:var(--dim); }
-    .graph-layout { display:grid; grid-template-columns:minmax(0,1fr) 240px; min-height:480px; border:1px solid var(--line); background:#040705; }
-    .topology { width:100%; height:480px; border-right:1px solid var(--line); }
+    .graph-layout { display:grid; grid-template-columns:minmax(0,1fr) 240px; min-height:700px; border:1px solid var(--line); background:#040705; }
+    .topology { width:100%; height:700px; border-right:1px solid var(--line); }
     .edge { stroke:var(--dim); stroke-width:1; opacity:.55; marker-end:url(#arrow); }
     marker path { fill:var(--dim); }
     .edge.live { stroke:var(--green); stroke-width:2; stroke-dasharray:7 5; animation:flow 1s linear infinite; }
@@ -73,7 +75,7 @@
     .graph-stats { color:var(--dim); font-size:10px; }
     @keyframes flow { to { stroke-dashoffset:-12; } }
     footer { display:flex; justify-content:space-between; gap:20px; padding:20px 0 0; text-transform:uppercase; }
-    @media (max-width:800px) { .shell{padding:18px}.primary-grid,.secondary-grid,.graph-layout,.inline-fields{grid-template-columns:1fr}.topology{height:390px;border-right:0;border-bottom:1px solid var(--line)}.masthead{align-items:flex-start;flex-direction:column}.system-state{text-align:left}.rule span:nth-of-type(n+3),.rule i:nth-of-type(n+3){display:none}footer{display:grid;grid-template-columns:1fr 1fr}.command-row{align-items:stretch;flex-direction:column} }
+    @media (max-width:800px) { .shell{padding:18px}.primary-grid,.secondary-grid,.graph-layout,.inline-fields{grid-template-columns:1fr}.example-row{flex-direction:column}.topology{height:560px;border-right:0;border-bottom:1px solid var(--line)}.masthead{align-items:flex-start;flex-direction:column}.system-state{text-align:left}.rule span:nth-of-type(n+3),.rule i:nth-of-type(n+3){display:none}footer{display:grid;grid-template-columns:1fr 1fr}.command-row{align-items:stretch;flex-direction:column} }
   </style>
 </head>
 <body>

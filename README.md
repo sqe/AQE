@@ -101,6 +101,8 @@ Endpoints:
 - durable workflow API: <http://localhost:8008/docs>
 - BYOA discovery: <http://localhost:8009/.well-known/agent.json>
 - diagnostics and external agent probes: <http://localhost:8006/docs>
+- experimental agent builder: <http://localhost:8015/docs>
+- review-only dbt builder: <http://localhost:8016/docs>
 - Temporal UI: <http://localhost:8233>
 
 Start a durable run:
@@ -110,6 +112,28 @@ curl -s http://localhost:8008/v1/qe-runs \
   -H 'content-type: application/json' \
   -d '{"url":"https://example.com","test_type":"website","spec":"Verify the primary user flow","repair":true}'
 ```
+
+The dashboard includes **LOAD AGENT EXAMPLE** and **LOAD WEBSITE EXAMPLE**.
+Generation requires either a self-hosted OpenAI-compatible embedding/completions
+service or Gemini configuration in `aqe-runtime-secrets`:
+
+```yaml
+stringData:
+  LLM_PROVIDER_MODE: SELF_HOSTED
+  LLM_EMBEDDING_ENDPOINT: http://your-model-service/v1/embeddings
+  LLM_GENERATION_ENDPOINT: http://your-model-service/v1/completions
+```
+
+For Gemini, set `LLM_PROVIDER_MODE: GEMINI` and `GEMINI_API_KEY` instead. Restart
+`aqe-test-generation` after changing the Secret. Without model configuration,
+the workflow now fails immediately with a visible configuration error rather
+than timing out. Product RAG data is optional; ontology and scenario grounding
+remain active when no product-knowledge artifact has been ingested.
+
+The UI polls `GET /v1/qe-runs/<workflow-id>` until completion and shows the
+result or root failure. GitHub source grounding is optional. If used, enter
+`owner/repository` (or a GitHub URL) plus a commit/tag and add that repository to
+`config.githubSourceAllowedRepositories`.
 
 To ground agent testing in its implementation, configure a read-only fine-grained
 GitHub token and an explicit repository allowlist, then include a commit, tag,
@@ -127,6 +151,26 @@ The source-analysis agent reads at most 30 allowlisted source files and 500 KB,
 records blob/tree SHAs, and emits candidate line-level findings. The generation
 model uses those candidates to design black-box reproductions. They do not
 become confirmed defects until execution and the explicit finding gate pass.
+
+For MCP-based GitHub access, deploy the `github-connector` agent with a dedicated
+fine-grained token. It connects to GitHub's official Streamable HTTP MCP server,
+discovers tools with `tools/list`, and permits only configured tools and source
+repositories. Use the read-only repos endpoint for source inspection:
+
+```bash
+kubectl -n aqe patch secret aqe-runtime-secrets --type merge -p '{
+  "stringData": {
+    "GITHUB_MCP_URL": "https://api.githubcopilot.com/mcp/x/repos/readonly",
+    "GITHUB_MCP_TOKEN": "github_pat_read_only",
+    "GITHUB_MCP_ALLOWED_TOOLS": "get_file_contents,get_commit,list_branches,search_code"
+  }
+}'
+kubectl -n aqe rollout restart deployment/aqe-github-connector
+```
+
+The connector is the credential and policy boundary; generation and execution
+agents must not receive the MCP token. Configure a separate write-scoped
+connector before enabling branch, file, or pull-request tools.
 
 Configure repair with an OpenAI-compatible chat-completions endpoint:
 
@@ -179,9 +223,11 @@ platform operation.
 
 ## Continuous evaluation
 
-Golden generation and repair cases live in `evaluation/golden/*.jsonl`.
-Positive and adversarial negative examples check atomic tests, stable waiting,
-and preservation of expected values.
+The release suite contains 105 cases: 100 semantic cases spanning 20 agent
+professions and five quality dimensions, plus five generation/repair checks.
+Positive and adversarial examples check domain accuracy, uncertainty, safety,
+protocol behavior, orchestration, atomic tests, stable waiting, and preservation
+of expected values.
 
 ```bash
 python evaluation/run.py --minimum-score 1.0
@@ -189,8 +235,39 @@ EVAL_MODEL_URL=https://model.example/v1/chat/completions \
   EVAL_MODEL_NAME=my-model python evaluation/run.py --live --minimum-score 0.8
 ```
 
-CI validates the dataset on every change. A scheduled workflow evaluates a live
-model when `EVAL_MODEL_URL` and optional API-key secrets are configured.
+CI validates the dataset on every change. A scheduled workflow and every
+SemVer release run it in 10 parallel shards. Configure `EVAL_MODEL_URL`,
+optional `EVAL_MODEL_API_KEY`, and `EVAL_MODEL_NAME` for live inference; without
+them the workflow validates the golden corpus and scorers offline. Set
+`EVAL_RESULTS_URL` to the diagnostics agent's `/v1/evaluations` endpoint to
+publish shard score, semantic score, case count, and latency to Prometheus and
+the **AQE Release Quality** Grafana dashboard. A model served only on a private
+LAN, such as `192.168.x.x`, requires a GitHub self-hosted runner on that network.
+Register it with the custom label `aqe-model` and set the repository variable
+`EVAL_RUNNER=aqe-model` to route only model
+evaluation there; all normal CI and image builds remain on GitHub-hosted Linux.
+
+## Experimental builders
+
+`agent-builder` turns a case study, refined document requirements, or pinned
+allowlisted GitHub evidence into a minimal Python agent bundle with semantic
+tests, a non-root Dockerfile, exact dependencies, and an Agent Card. `dbt-builder`
+turns an explicit warehouse source inventory and business definitions into a
+documented staging → intermediate → marts dbt project with data tests. Both
+apply static gates, write ZIP evidence to RustFS, return `REVIEW_REQUIRED`, and
+never execute, deploy, or connect generated code to a warehouse.
+
+```bash
+curl -s http://localhost:8015/v1/builds -H 'content-type: application/json' \
+  -d '{"spec":"A teaching agent that explains a concept and cites its supplied lesson."}'
+
+curl -s http://localhost:8016/v1/missions -H 'content-type: application/json' \
+  -d '{"dialect":"snowflake","goals":"Daily completed-order revenue by customer","sources":[{"name":"orders","columns":["id","customer_id","status","amount","created_at"]}]}'
+```
+
+These are design accelerators, not autonomous production publishers. Human
+review, target-specific execution, security checks, and normal pull-request
+controls remain mandatory.
 
 ## Agent ontology and live graph
 
@@ -214,8 +291,11 @@ to the correct HTTP or browser executor.
   validation, both Helm profiles, every independently owned image, and an execution E2E
   test with real PostgreSQL and RustFS persistence.
 - `.github/workflows/release.yml`: builds and publishes versioned GHCR images and
-  packages the Helm chart; published images include provenance and SBOM
+  packages the Helm chart; a tag cannot become a GitHub Release until all ten
+  model-evaluation shards pass. Published images include provenance and SBOM
   attestations.
+- [`docs/production-release.md`](docs/production-release.md): protected-branch,
+  SemVer promotion, verification, and rollback checklist.
 - `deploy/argocd/project.yaml` and `application.yaml`: scoped source/destination,
   automated prune/self-heal, retry policy, server-side apply, and independent
   Argo CD Image Updater digest tracking for every agent.
