@@ -12,27 +12,29 @@ and internal/external agent examples.
 
 ## Architecture
 
-```text
-Client / agentic-kubernetes-platform supervisor
-                    │ JSON-RPC over Kafka
-                    ▼
-            AQE BYOA adapter
-                    │
-                    ▼
-             Temporal workflow
-       ┌────────────┴────────────┐
-       ▼                         ▼
-Test generation             Test execution
-RAG + model                  quality gate
-       │                     sandbox + pytest
-       │                         │
-       │                    failure diagnosis
-       │                         │
-       └──────────────────► bounded repair loop
-                                 │
-                                 ▼
-                    PostgreSQL + RustFS evidence
+```mermaid
+flowchart TB
+    Client[Client or agentic-kubernetes-platform] -->|JSON-RPC / Kafka| BYOA[AQE BYOA adapter]
+    BYOA --> Temporal[Temporal workflow]
+    Temporal --> Generate[Test generation<br/>ontology + RAG + model]
+    Generate --> Execute[Test execution<br/>quality gate + sandbox + pytest]
+    Execute --> Diagnose[Failure diagnosis and bounded repair]
+    Generate --> Evidence[(PostgreSQL state<br/>+ RustFS artifacts)]
+    Execute --> Evidence
+    Diagnose --> Evidence
+    Execute --> Outcome{Verified outcome}
+    Outcome -->|quality gate and pytest pass| Green[GitHub generated-tests catalog]
+    Outcome -->|confirmed assertion-only product defect| Finding[GitHub generated-findings catalog]
+    Outcome -->|test, environment, or untriaged failure| Evidence
+    Green --> CT[Version-specific continuous testing]
+    Finding --> CT
 ```
+
+PostgreSQL and RustFS are the complete operational evidence store; they retain
+every candidate, attempt, result, and large artifact. GitHub is the durable,
+reviewable terminal catalog for **promoted** assets only: validated green tests
+and explicitly confirmed defect reproducers. Unvalidated model output and
+ordinary failures are never committed merely to make the catalog exhaustive.
 
 ### Ownership boundaries
 
@@ -46,6 +48,7 @@ RAG + model                  quality gate
 | Repair client | At most `MAX_REPAIR_ATTEMPTS`; preserve expected behavior and never weaken assertions |
 | Diagnostics agent | Fleet Agent Card checks, skill contract probes, safe retries, and recovery recommendations |
 | PostgreSQL / RustFS | Test-run state, source, repaired artifacts, output, and audit evidence |
+| GitHub catalogs | Versioned validated tests and confirmed issue reproducers that continuously test a specific target version |
 
 Generated code is never silently changed before its first run. The old executor
 rewrote URLs, expected strings, and locator strictness, which could manufacture
@@ -73,6 +76,8 @@ agent without encoding profession-specific behavior into AQE. Keep the catalog
 repository private when scenarios or expected outcomes contain sensitive data.
 When the catalog is this repository, `.github/workflows/generated-tests.yml`
 runs the generated branch automatically with read-only GitHub permissions.
+The resulting GitHub URL is written back to the PostgreSQL run record, linking
+operational evidence to its reviewable, version-controlled test.
 
 Confirmed product defects are also durable GitHub artifacts, but ordinary test
 failures are not. After triage, `POST /v1/findings/<task-id>/confirm` reruns the

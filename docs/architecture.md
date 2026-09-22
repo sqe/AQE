@@ -29,8 +29,12 @@ flowchart LR
     Generator --> PostgreSQL[(PostgreSQL state)]
     AgentExecutor --> PostgreSQL
     WebExecutor --> PostgreSQL
-    AgentExecutor --> Catalog[Versioned GitHub test catalog]
-    WebExecutor --> Catalog
+    AgentExecutor --> Promotion{Publication gate}
+    WebExecutor --> Promotion
+    Promotion -->|quality gate + pytest pass| GreenCatalog[GitHub generated-tests catalog]
+    Promotion -->|confirmed assertion-only defect| FindingCatalog[GitHub generated-findings catalog]
+    GreenCatalog --> CT[Version-specific continuous testing]
+    FindingCatalog --> CT
 ```
 
 ### Ownership rules
@@ -45,7 +49,41 @@ flowchart LR
 | Diagnostics agent | Agent Card/skill contract checks, safe retry, recommendations | Unapproved restarts or cluster mutation |
 | PostgreSQL | Mutable run state and queryable audit metadata | Large source or evidence blobs |
 | RustFS | Generated/repaired source and large evidence | Workflow state transitions |
-| GitHub catalog | Validated, passing tests grouped by agent version | Secrets or unvalidated model output |
+| GitHub green catalog | Validated, passing tests grouped by target type, agent, and version | Secrets, ordinary failures, or unvalidated model output |
+| GitHub findings catalog | Explicitly confirmed, assertion-only defect reproducers with evidence metadata | Test defects, environment failures, or source-analysis suspicions |
+
+### Persistence and promotion contract
+
+PostgreSQL and RustFS are not alternatives to GitHub. They form the complete
+operational evidence layer: every generated candidate, repair attempt, execution
+result, and large artifact remains available even when it is unsafe or useless
+to publish. GitHub is the terminal, reviewable catalog for the subset that has
+crossed a strict publication gate.
+
+```mermaid
+flowchart LR
+    Run[Generated run] --> DB[(PostgreSQL<br/>state + provenance)]
+    Run --> Objects[(RustFS<br/>source + evidence)]
+    Run --> Classify{Execution classification}
+    Classify -->|passed quality gate and pytest| Green[Validated green test]
+    Classify -->|failed| Triage{Explicit defect confirmation}
+    Triage -->|assertion failure; no collection/runtime errors| Reproducer[Confirmed reproducer]
+    Triage -->|test/environment/untriaged| Retain[Evidence only]
+    Green --> Publisher[Scoped GitHub catalog publisher]
+    Reproducer --> Publisher
+    Publisher --> Tests[generated-tests/type/agent/version]
+    Publisher --> Findings[generated-findings/type/agent/version]
+    Tests --> Actions[GitHub continuous testing]
+    Findings --> Actions
+    Tests -. catalog URL .-> DB
+    Findings -. catalog URL .-> DB
+    Retain --> DB
+    Retain --> Objects
+```
+
+This split prevents sensitive raw evidence and bad model output from entering
+source control while ensuring useful tests and real defect reproducers survive
+as immutable, target-versioned GitHub assets.
 
 ### Repository and deployment boundaries
 
@@ -128,6 +166,13 @@ sequenceDiagram
         E->>E: Repeat quality gate and execution
         E->>R: Store final repaired source
         E->>DB: Persist final result and all attempts
+    else confirmed product defect
+        E->>E: Re-run without repair and require assertion-only failure
+        E->>GH: Publish reproducer + evidence metadata to generated-findings
+        E->>DB: Persist confirmation and catalog link
+    else ordinary failure
+        E->>DB: Persist test/environment/untriaged classification
+        E->>R: Retain source, output, and evidence without GitHub publication
     end
     E-->>T: Final structured result
     T-->>API: Workflow result
@@ -422,8 +467,10 @@ sequenceDiagram
 ```
 
 Recent generation events are intentionally bounded in memory. PostgreSQL and
-RustFS remain the durable audit sources; a future high-volume graph can project
-the same events into a dedicated graph store without changing the API.
+RustFS remain the complete durable audit sources, while validated tests and
+confirmed defect reproducers are linked to their terminal GitHub catalog paths.
+A future high-volume graph can project the same events into a dedicated graph
+store without changing the API.
 
 ## 8. BYOA platform flow
 
@@ -465,7 +512,8 @@ flowchart LR
     PreSync --> Deploy[Server-side apply]
     Deploy --> PostSync[PostSync Agent Card validation]
     PostSync --> Ready[Healthy AQE automaton]
-    CatalogPush[Validated test catalog push] --> VersionCI[Run generated Python tests for agent version]
+    CatalogPush[Validated green-test push] --> VersionCI[Run generated Python tests for agent version]
+    FindingPush[Confirmed defect-reproducer push] --> VersionCI
 ```
 
 ### Deployment invariants
