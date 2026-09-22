@@ -47,6 +47,7 @@ QDRANT_CLIENT = QdrantClient(
     host=os.environ.get("QDRANT_HOST", "qdrant"),
     port=int(os.environ.get("QDRANT_PORT", "6333")),
     api_key=os.environ.get("QDRANT_API_KEY") or None,
+    https=os.environ.get("QDRANT_HTTPS", "false").lower() == "true",
 )
 COLLECTION_NAME = "product_knowledge"
 

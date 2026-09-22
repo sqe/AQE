@@ -22,6 +22,9 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      {{- with $root.Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ $name }}
           image: {{ $service.image | quote }}
@@ -71,6 +74,9 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: worker
           image: {{ .Values.images.temporal | quote }}

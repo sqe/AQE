@@ -5,6 +5,7 @@ import logging
 import os
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 from aiokafka import AIOKafkaConsumer
 from github import Github, InputGitAuthor 
@@ -262,8 +263,15 @@ if __name__ == '__main__':
     for route in reversed(custom_routes): 
         starlette_app.routes.insert(0, route)
 
-    starlette_app.add_event_handler("startup", executor.agent.start)
-    starlette_app.add_event_handler("shutdown", executor.agent.stop)
+    @asynccontextmanager
+    async def lifespan(_):
+        await executor.agent.start()
+        try:
+            yield
+        finally:
+            await executor.agent.stop()
+
+    starlette_app.router.lifespan_context = lifespan
 
     # 5. Apply the CORS Middleware
     cors_app = CORSMiddleware(

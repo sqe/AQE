@@ -7,12 +7,15 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 spec:
   backoffLimit: 1
-  ttlSecondsAfterFinished: 300
+  ttlSecondsAfterFinished: 900
   template:
     metadata:
       labels: {app.kubernetes.io/name: aqe-preflight}
     spec:
       restartPolicy: Never
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: diagnostics
           image: {{ (index .Values.agents "diagnostics").image | quote }}
@@ -34,12 +37,15 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 spec:
   backoffLimit: 2
-  ttlSecondsAfterFinished: 300
+  ttlSecondsAfterFinished: 900
   template:
     metadata:
       labels: {app.kubernetes.io/name: aqe-agent-validation}
     spec:
       restartPolicy: Never
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: diagnostics
           image: {{ (index .Values.agents "diagnostics").image | quote }}
@@ -62,12 +68,15 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 spec:
   backoffLimit: 3
-  ttlSecondsAfterFinished: 300
+  ttlSecondsAfterFinished: 900
   template:
     metadata:
       labels: {app.kubernetes.io/name: aqe-ontology-ingestion}
     spec:
       restartPolicy: Never
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: ontology-ingestion
           image: {{ (index .Values.agents "knowledge-ingestion").image | quote }}

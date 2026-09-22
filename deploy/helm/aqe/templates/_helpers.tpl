@@ -13,6 +13,7 @@ app.kubernetes.io/component: {{ .component }}
 {{- define "aqe.env" -}}
 - {name: OBJECT_STORE_ENDPOINT, value: {{ .Values.config.objectStoreEndpoint | quote }}}
 - {name: QDRANT_HOST, value: {{ .Values.config.qdrantHost | quote }}}
+- {name: QDRANT_HTTPS, value: {{ .Values.config.qdrantHttps | quote }}}
 - {name: REDIS_HOST, value: {{ .Values.config.redisHost | quote }}}
 - {name: KAFKA_BROKER, value: {{ .Values.config.kafkaBootstrapServers | quote }}}
 - {name: KAFKA_BOOTSTRAP_SERVERS, value: {{ .Values.config.kafkaBootstrapServers | quote }}}

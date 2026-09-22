@@ -1,4 +1,5 @@
 imagePullSecrets: []
+tolerations: []
 secretName: aqe-runtime-secrets
 replicaCount: 1
 
@@ -23,6 +24,7 @@ images:
 config:
   objectStoreEndpoint: http://rustfs.rustfs.svc:9000
   qdrantHost: qdrant
+  qdrantHttps: "false"
   redisHost: redis
   kafkaBootstrapServers: kafka:9092
   temporalAddress: temporal-frontend.temporal.svc:7233

@@ -44,6 +44,7 @@ POSTGRES_DB_URL = os.environ.get("POSTGRES_URL", "postgresql://user:pass@postgre
 QDRANT_HOST = os.environ.get("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.environ.get("QDRANT_PORT", 6333))
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or None
+QDRANT_HTTPS = os.environ.get("QDRANT_HTTPS", "false").lower() == "true"
 COLLECTION_NAME = "product_knowledge"
 EMBEDDING_DIMENSION = 384 # Must match the dimension used in TestGenerationAgent
 
@@ -122,6 +123,7 @@ class LLMFineTuningAgentLogic:
             host=QDRANT_HOST,
             port=QDRANT_PORT,
             api_key=QDRANT_API_KEY,
+            https=QDRANT_HTTPS,
         )
         self.artifact_manager = ArtifactManager()
         logger.info("LLMFineTuningAgent Logic initialized with Qdrant and Artifact Manager.")

@@ -10,3 +10,7 @@ networkPolicy:
   enabled: true
   infrastructureNamespace: agentic-platform
   messagingNamespace: messaging
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule

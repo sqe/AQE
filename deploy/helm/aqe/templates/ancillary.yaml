@@ -15,6 +15,9 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: reporting
           image: {{ .Values.images.reporting | quote }}
@@ -42,6 +45,9 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: frontend
           image: {{ .Values.images.frontend | quote }}
@@ -49,6 +55,8 @@ spec:
           readinessProbe: {httpGet: {path: /, port: http}, initialDelaySeconds: 3}
           resources: {{ toYaml .Values.resources | nindent 12 }}
           securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}, readOnlyRootFilesystem: true}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {sizeLimit: 64Mi}}]
 ---
 apiVersion: v1
 kind: Service
