@@ -43,7 +43,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12", cache: pip}
-      - run: pip install -r requirements.txt pytest-playwright
+      - name: Install platform and tested agent dependencies
+        run: >-
+          pip install -r requirements.txt
+          -r agents/agent_builder/requirements.txt
+          -r agents/dbt_builder/requirements.txt
+          -r agents/knowledge_ingestion/requirements.txt
+          pytest-playwright
       - run: python -m compileall -q agents service temporal_worker byoa_adapter evaluation
       - run: pytest -q test
       - run: python evaluation/run.py --minimum-score 1.0
@@ -59,9 +65,14 @@ jobs:
       - run: helm template aqe deploy/helm/aqe -f deploy/helm/aqe/values-agentic-platform.yaml > /tmp/aqe-platform-manifests.yaml
       - name: Validate agent ownership and Argo CD YAML
         run: |
-          test "$(find agents -mindepth 2 -maxdepth 2 -name agent.yaml | wc -l)" -eq 10
-          test "$(find agents -mindepth 2 -maxdepth 2 -name Dockerfile | wc -l)" -eq 10
-          test "$(find agents -mindepth 2 -maxdepth 2 -name app.py | wc -l)" -eq 10
+          for contract in agents/*/agent.yaml; do
+            directory=${contract%/*}
+            test -f "$directory/app.py"
+            test -f "$directory/Dockerfile"
+            test -f "$directory/requirements.txt"
+          done
+          test "$(find agents -mindepth 2 -maxdepth 2 -name agent.yaml | wc -l)" -eq \
+            "$(find agents -mindepth 2 -maxdepth 2 -name Dockerfile | wc -l)"
           ruby -e 'require "yaml"; abort "not an Application" unless YAML.load_file("deploy/argocd/application.yaml")["kind"] == "Application"; abort "not an AppProject" unless YAML.load_file("deploy/argocd/project.yaml")["kind"] == "AppProject"'
 
   image-builds:
