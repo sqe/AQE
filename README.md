@@ -143,7 +143,7 @@ the platform registry and Kafka:
 
 ```bash
 export PLATFORM_REGISTRY_URL=http://platform-agentic-platform-registry.agentic-platform.svc:8001
-export PLATFORM_KAFKA_BOOTSTRAP_SERVERS=kafka-kafka-bootstrap.messaging.svc:9092
+export PLATFORM_KAFKA_BOOTSTRAP_SERVERS=kafka.messaging.svc:9092
 ```
 
 Published skills are:
