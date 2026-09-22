@@ -3,12 +3,16 @@
 import uvicorn
 import os
 import asyncio
+import hashlib
 import json
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import uuid
 import io
+import re
+from html.parser import HTMLParser
+from pathlib import Path
 
 # Starlette/CORS Imports
 from starlette.applications import Starlette
@@ -34,6 +38,9 @@ from a2a.types import AgentCard, AgentCapabilities, AgentSkill
 from a2a.utils import new_agent_text_message
 from observability.metrics import PrometheusMiddleware
 
+from docx import Document
+from pypdf import PdfReader
+
 # 0. Logging Configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('LLMFineTuningAgent') 
@@ -47,12 +54,64 @@ QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or None
 QDRANT_HTTPS = os.environ.get("QDRANT_HTTPS", "false").lower() == "true"
 COLLECTION_NAME = "product_knowledge"
 EMBEDDING_DIMENSION = 384 # Must match the dimension used in TestGenerationAgent
+MAX_DOCUMENT_BYTES = int(os.environ.get("MAX_DOCUMENT_BYTES", str(10 * 1024 * 1024)))
+SUPPORTED_DOCUMENT_TYPES = {".txt", ".md", ".rst", ".json", ".yaml", ".yml", ".csv", ".html", ".htm", ".pdf", ".docx"}
 
 # Mock function for text embedding (Actual model usage would be here)
 def embed_text(text: str) -> List[float]:
     """Mock embedding function to simulate text-to-vector conversion (384-dim)."""
     # In a real system, this calls a centralized embedding service (e.g., Gemini API)
     return [0.1] * EMBEDDING_DIMENSION
+
+
+class _TextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        if data.strip():
+            self.parts.append(data.strip())
+
+
+def extract_document_text(filename: str, content: bytes) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in SUPPORTED_DOCUMENT_TYPES:
+        raise ValueError(f"Unsupported document type {suffix or '<none>'}")
+    if suffix == ".pdf":
+        return "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(content)).pages)
+    if suffix == ".docx":
+        return "\n".join(paragraph.text for paragraph in Document(io.BytesIO(content)).paragraphs)
+    text = content.decode("utf-8-sig")
+    if suffix in {".html", ".htm"}:
+        parser = _TextExtractor()
+        parser.feed(text)
+        return "\n".join(parser.parts)
+    return text
+
+
+def refine_requirements(text: str) -> list[dict[str, Any]]:
+    """Normalize document statements into stable, reviewable test oracles."""
+    candidates = re.split(r"(?:\r?\n)+|(?<=[.!?])\s+", text)
+    seen: set[str] = set()
+    requirements: list[dict[str, Any]] = []
+    for candidate in candidates:
+        statement = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", candidate).strip()
+        statement = re.sub(r"\s+", " ", statement)
+        if len(statement) < 8 or statement.lower() in seen:
+            continue
+        seen.add(statement.lower())
+        requirements.append(
+            {
+                "id": f"REQ-{len(requirements) + 1:04d}",
+                "statement": statement,
+                "testable": any(
+                    token in statement.lower()
+                    for token in ("must", "shall", "should", "returns", "responds", "within", "expected")
+                ),
+            }
+        )
+    return requirements
 
 # --- Internal Artifact Management Logic (Replicated from Artifact Management Agent) ---
 class ArtifactManager:
@@ -159,6 +218,79 @@ class LLMFineTuningAgentLogic:
         ]
         self.qdrant_client.upsert(collection_name=COLLECTION_NAME, points=points, wait=True)
         return len(points)
+
+    def _upsert_document_records(
+        self, document_id: str, filename: str, records: List[Dict[str, str]]
+    ) -> int:
+        if not self.qdrant_client.collection_exists(COLLECTION_NAME):
+            self.qdrant_client.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config=models.VectorParams(size=EMBEDDING_DIMENSION, distance=models.Distance.COSINE),
+            )
+        self.qdrant_client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[models.FieldCondition(key="document_id", match=models.MatchValue(value=document_id))]
+                )
+            ),
+            wait=True,
+        )
+        points = [
+            models.PointStruct(
+                id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"aqe:document:{document_id}:{record['id']}")),
+                vector=embed_text(record["text"]),
+                payload={
+                    "text_chunk": record["text"],
+                    "source": "product_knowledge",
+                    "document_id": document_id,
+                    "filename": filename,
+                    "record_id": record["id"],
+                    "record_kind": "requirement",
+                },
+            )
+            for record in records
+        ]
+        self.qdrant_client.upsert(collection_name=COLLECTION_NAME, points=points, wait=True)
+        return len(points)
+
+    async def ingest_document(self, filename: str, content: bytes) -> Dict[str, Any]:
+        text = await asyncio.to_thread(extract_document_text, filename, content)
+        requirements = refine_requirements(text)
+        if not requirements:
+            return {"status": "FAILED", "error": "Document contains no extractable requirements."}
+        document_id = str(uuid.uuid4())
+        records = [{"id": item["id"], "text": item["statement"]} for item in requirements]
+        await asyncio.to_thread(self._upsert_document_records, document_id, filename, records)
+        source_path = f"requirements/{document_id}/source{Path(filename).suffix.lower()}"
+        await asyncio.to_thread(
+            self.artifact_manager.object_store.write_bytes,
+            source_path,
+            content,
+            "application/octet-stream",
+        )
+        metadata = {
+            "document_id": document_id,
+            "filename": filename,
+            "source_path": source_path,
+            "requirements": requirements,
+            "content_sha256": hashlib.sha256(content).hexdigest(),
+        }
+        version_id = await self.artifact_manager.register_new_artifact_version(
+            json.dumps(metadata), "REQUIREMENTS_DOCUMENT"
+        )
+        return {
+            "status": "SUCCESS",
+            "document_id": document_id,
+            "artifact_version_id": version_id,
+            "source_path": source_path,
+            "filename": filename,
+            "requirements": requirements,
+            "summary": {
+                "extracted": len(requirements),
+                "testable": sum(item["testable"] for item in requirements),
+            },
+        }
 
     async def ingest_and_register_knowledge(self, product_specs: str) -> Dict[str, str]:
         """
@@ -302,6 +434,21 @@ async def ingest_ontology_handler(request: Request):
     return JSONResponse(result, status_code=200 if result.get("status") == "SUCCESS" else 500)
 
 
+async def ingest_document_handler(request: Request):
+    try:
+        form = await request.form(max_files=1, max_fields=5, max_part_size=MAX_DOCUMENT_BYTES)
+        upload = form.get("file")
+        if upload is None or not getattr(upload, "filename", None):
+            return JSONResponse({"error": "multipart field 'file' is required"}, status_code=400)
+        content = await upload.read()
+        if not content or len(content) > MAX_DOCUMENT_BYTES:
+            return JSONResponse({"error": f"document must be 1-{MAX_DOCUMENT_BYTES} bytes"}, status_code=413)
+        result = await AGENT_LOGIC.ingest_document(upload.filename, content)
+        return JSONResponse(result, status_code=200 if result.get("status") == "SUCCESS" else 422)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=415)
+
+
 # --- 4. Server Startup (The Executor that makes the agent runnable) ---
 
 if __name__ == '__main__':
@@ -349,6 +496,7 @@ if __name__ == '__main__':
         Route("/agent_card", endpoint=agent_card_endpoint, methods=["GET"]), # NEW ROUTE ADDED
         Route("/ingest_knowledge", endpoint=ingest_knowledge_handler, methods=["POST"]),
         Route("/ingest_ontology", endpoint=ingest_ontology_handler, methods=["POST"]),
+        Route("/v1/documents", endpoint=ingest_document_handler, methods=["POST"]),
     ]
 
     # 6. Create the main Starlette application and mount the A2A app

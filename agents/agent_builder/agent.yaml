@@ -1,0 +1,6 @@
+name: experimental-agent-builder
+version: 0.1.0
+description: Generates review-only agent bundles from requirements and pinned source evidence
+port: 8015
+skills:
+  - agent.build.experimental

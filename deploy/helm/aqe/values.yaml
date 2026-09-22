@@ -4,10 +4,13 @@ secretName: aqe-runtime-secrets
 replicaCount: 1
 
 agents:
+  agent-builder: {image: ghcr.io/sqe/aqe-agent-builder:main, port: 8015}
   artifact-management: {image: ghcr.io/sqe/aqe-artifact-management:main, port: 8007}
   change-detection: {image: ghcr.io/sqe/aqe-change-detection:main, port: 8000}
+  dbt-builder: {image: ghcr.io/sqe/aqe-dbt-builder:main, port: 8016}
   diagnostics: {image: ghcr.io/sqe/aqe-diagnostics:main, port: 8006}
   github-analysis: {image: ghcr.io/sqe/aqe-github-analysis:main, port: 8010}
+  github-connector: {image: ghcr.io/sqe/aqe-github-connector:main, port: 8014}
   github-commit: {image: ghcr.io/sqe/aqe-github-commit:main, port: 8011}
   knowledge-ingestion: {image: ghcr.io/sqe/aqe-knowledge-ingestion:main, port: 8004}
   test-generation: {image: ghcr.io/sqe/aqe-test-generation:main, port: 8001}
@@ -33,7 +36,7 @@ config:
   modelHealthUrl: ""
   githubSourceAllowedRepositories: ""
   agentProbeAllowedHosts: >-
-    aqe-artifact-management,aqe-change-detection,aqe-diagnostics,aqe-github-analysis,
+    aqe-agent-builder,aqe-artifact-management,aqe-change-detection,aqe-dbt-builder,aqe-diagnostics,aqe-github-analysis,aqe-github-connector,
     aqe-github-commit,aqe-knowledge-ingestion,aqe-test-generation,aqe-test-execution,
     aqe-webpage-state-capture,aqe-website-execution,aqe-byoa
 
@@ -49,3 +52,5 @@ networkPolicy:
   enabled: true
   infrastructureNamespace: agentic-platform
   messagingNamespace: messaging
+  llmEgressCidr: ""
+  llmEgressPort: 1234

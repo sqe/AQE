@@ -1,0 +1,7 @@
+name: github-connector
+version: 1.0.0
+description: Governed GitHub MCP tool connector
+port: 8014
+skills:
+  - github.tools.list
+  - github.tools.call

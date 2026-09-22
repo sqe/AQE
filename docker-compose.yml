@@ -170,6 +170,10 @@ services:
       QDRANT_HOST: qdrant
       KAFKA_BROKER: kafka:9092
       REDIS_HOST: redis # Added Redis host
+      LLM_PROVIDER_MODE: ${LLM_PROVIDER_MODE:-SELF_HOSTED}
+      LLM_EMBEDDING_ENDPOINT: ${LLM_EMBEDDING_ENDPOINT:-}
+      LLM_GENERATION_ENDPOINT: ${LLM_GENERATION_ENDPOINT:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       TEST_CATALOG_REPOSITORY: ${TEST_CATALOG_REPOSITORY:-}
       TEST_CATALOG_BRANCH: ${TEST_CATALOG_BRANCH:-aqe-generated-tests}
       TEST_CATALOG_GITHUB_TOKEN: ${TEST_CATALOG_GITHUB_TOKEN:-}
@@ -189,6 +193,43 @@ services:
       GITHUB_SOURCE_TOKEN: ${GITHUB_SOURCE_TOKEN:-}
     ports:
       - "8010:8010"
+
+  agent_builder_agent:
+    build:
+      context: .
+      dockerfile: agents/agent_builder/Dockerfile
+    environment:
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
+      LLM_GENERATION_ENDPOINT: ${LLM_GENERATION_ENDPOINT:-}
+      LLM_GENERATION_MODEL: ${LLM_GENERATION_MODEL:-}
+      SOURCE_ANALYSIS_URL: http://github_analysis_agent:8010/v1/analyze
+    ports:
+      - "8015:8015"
+    depends_on: [rustfs_init, github_analysis_agent]
+
+  dbt_builder_agent:
+    build:
+      context: .
+      dockerfile: agents/dbt_builder/Dockerfile
+    environment:
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
+      LLM_GENERATION_ENDPOINT: ${LLM_GENERATION_ENDPOINT:-}
+      LLM_GENERATION_MODEL: ${LLM_GENERATION_MODEL:-}
+    ports:
+      - "8016:8016"
+    depends_on: [rustfs_init]
+
+  github_connector_agent:
+    build:
+      context: .
+      dockerfile: agents/github_connector/Dockerfile
+    environment:
+      GITHUB_MCP_URL: ${GITHUB_MCP_URL:-https://api.githubcopilot.com/mcp/x/repos/readonly}
+      GITHUB_MCP_TOKEN: ${GITHUB_MCP_TOKEN:-}
+      GITHUB_MCP_ALLOWED_TOOLS: ${GITHUB_MCP_ALLOWED_TOOLS:-get_file_contents,get_commit,list_branches,search_code}
+      GITHUB_SOURCE_ALLOWED_REPOSITORIES: ${GITHUB_SOURCE_ALLOWED_REPOSITORIES:-}
+    ports:
+      - "8014:8014"
 
   github_commit_agent:
     build:
@@ -335,15 +376,18 @@ services:
       context: .
       dockerfile: agents/diagnostics/Dockerfile
     environment:
-      AGENT_PROBE_ALLOWED_HOSTS: "artifact_management_agent,change_detection_agent,test_generation_agent,github_analysis_agent,github_commit_agent,webpage_state_capture_agent,test_execution_agent,website_test_execution_agent,llm_fine_tuning_agent,aqe_byoa,host.docker.internal"
+      AGENT_PROBE_ALLOWED_HOSTS: "agent_builder_agent,artifact_management_agent,change_detection_agent,dbt_builder_agent,test_generation_agent,github_analysis_agent,github_connector_agent,github_commit_agent,webpage_state_capture_agent,test_execution_agent,website_test_execution_agent,llm_fine_tuning_agent,aqe_byoa,host.docker.internal"
       DIAGNOSTICS_CORS_ORIGINS: http://localhost:3000
     ports:
       - "8006:8006"
     depends_on:
+      - agent_builder_agent
       - artifact_management_agent
       - change_detection_agent
+      - dbt_builder_agent
       - test_generation_agent
       - github_analysis_agent
+      - github_connector_agent
       - github_commit_agent
       - webpage_state_capture_agent
       - test_execution_agent

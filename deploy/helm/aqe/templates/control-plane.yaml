@@ -87,6 +87,7 @@ spec:
             - {name: AGENT_TEST_EXECUTION_URL, value: "http://aqe-test-execution:8003/run_tests"}
             - {name: WEBSITE_TEST_EXECUTION_URL, value: "http://aqe-website-execution:8013/run_tests"}
             - {name: SOURCE_ANALYSIS_URL, value: "http://aqe-github-analysis:8010/v1/analyze"}
+            - {name: AGENT_DISCOVERY_URL, value: "http://aqe-diagnostics:8006/v1/agent-discovery"}
           resources: {{ toYaml .Values.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false

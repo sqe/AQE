@@ -1,0 +1,7 @@
+name: dbt-builder
+version: 0.1.0
+description: Generates and validates review-only dbt analytics projects
+port: 8016
+skills:
+  - dbt.blueprint.build
+  - dbt.project.validate
