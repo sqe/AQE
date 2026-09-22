@@ -1,0 +1,9 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: github-commit}
+spec:
+  module: agents.github_commit.app
+  port: 8011
+  cardPath: /agent_card
+  skills: [start_commit_consumer]
+  dependencies: [kafka, github]

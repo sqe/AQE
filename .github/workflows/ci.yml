@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request: {}
+  push: {branches: [main]}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {contents: read}
+
+jobs:
+  unit-and-evaluation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt pytest-playwright
+      - run: python -m compileall -q agents service temporal_worker byoa_adapter evaluation
+      - run: pytest -q test
+      - run: python evaluation/run.py --minimum-score 1.0
+      - run: docker compose config --quiet
+
+  helm-and-argocd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/aqe
+      - run: helm template aqe deploy/helm/aqe > /tmp/aqe-manifests.yaml
+      - run: helm template aqe deploy/helm/aqe -f deploy/helm/aqe/values-agentic-platform.yaml > /tmp/aqe-platform-manifests.yaml
+      - name: Validate agent ownership and Argo CD YAML
+        run: |
+          test "$(find agents -mindepth 2 -maxdepth 2 -name agent.yaml | wc -l)" -eq 10
+          test "$(find agents -mindepth 2 -maxdepth 2 -name Dockerfile | wc -l)" -eq 10
+          test "$(find agents -mindepth 2 -maxdepth 2 -name app.py | wc -l)" -eq 10
+          ruby -e 'require "yaml"; abort "not an Application" unless YAML.load_file("deploy/argocd/application.yaml")["kind"] == "Application"; abort "not an AppProject" unless YAML.load_file("deploy/argocd/project.yaml")["kind"] == "AppProject"'
+
+  image-builds:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: artifact-management, dockerfile: agents/artifact_management/Dockerfile}
+          - {name: change-detection, dockerfile: agents/change_detection/Dockerfile}
+          - {name: diagnostics, dockerfile: agents/diagnostics/Dockerfile}
+          - {name: github-analysis, dockerfile: agents/github_analysis/Dockerfile}
+          - {name: github-commit, dockerfile: agents/github_commit/Dockerfile}
+          - {name: knowledge-ingestion, dockerfile: agents/knowledge_ingestion/Dockerfile}
+          - {name: test-generation, dockerfile: agents/test_generation/Dockerfile}
+          - {name: test-execution, dockerfile: agents/test_execution/Dockerfile}
+          - {name: webpage-state-capture, dockerfile: agents/webpage_state_capture/Dockerfile}
+          - {name: website-execution, dockerfile: agents/website_execution/Dockerfile}
+          - {name: temporal, dockerfile: Dockerfile.temporal}
+          - {name: byoa, dockerfile: Dockerfile.byoa}
+          - {name: reporting, dockerfile: Dockerfile.reporting}
+          - {name: frontend, dockerfile: Dockerfile.frontend}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: aqe-${{ matrix.name }}:ci
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  execution-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: test/e2e/run.sh
+      - if: failure()
+        run: docker compose logs --no-color

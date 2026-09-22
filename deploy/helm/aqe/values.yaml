@@ -1,0 +1,49 @@
+imagePullSecrets: []
+secretName: aqe-runtime-secrets
+replicaCount: 1
+
+agents:
+  artifact-management: {image: ghcr.io/sqe/aqe-artifact-management:main, port: 8007}
+  change-detection: {image: ghcr.io/sqe/aqe-change-detection:main, port: 8000}
+  diagnostics: {image: ghcr.io/sqe/aqe-diagnostics:main, port: 8006}
+  github-analysis: {image: ghcr.io/sqe/aqe-github-analysis:main, port: 8010}
+  github-commit: {image: ghcr.io/sqe/aqe-github-commit:main, port: 8011}
+  knowledge-ingestion: {image: ghcr.io/sqe/aqe-knowledge-ingestion:main, port: 8004}
+  test-generation: {image: ghcr.io/sqe/aqe-test-generation:main, port: 8001}
+  test-execution: {image: ghcr.io/sqe/aqe-test-execution:main, port: 8003, testType: agent}
+  webpage-state-capture: {image: ghcr.io/sqe/aqe-webpage-state-capture:main, port: 8002}
+  website-execution: {image: ghcr.io/sqe/aqe-website-execution:main, port: 8013, testType: website}
+
+images:
+  temporal: ghcr.io/sqe/aqe-temporal:main
+  byoa: ghcr.io/sqe/aqe-byoa:main
+  reporting: ghcr.io/sqe/aqe-reporting:main
+  frontend: ghcr.io/sqe/aqe-frontend:main
+
+config:
+  objectStoreEndpoint: http://rustfs.rustfs.svc:9000
+  qdrantHost: qdrant
+  redisHost: redis
+  kafkaBootstrapServers: kafka:9092
+  temporalAddress: temporal-frontend.temporal.svc:7233
+  registryUrl: http://platform-agentic-platform-registry.agentic-platform.svc:8001
+  agentEndpoint: http://aqe-byoa:8009
+  modelHealthUrl: ""
+  githubSourceAllowedRepositories: ""
+  agentProbeAllowedHosts: >-
+    aqe-artifact-management,aqe-change-detection,aqe-diagnostics,aqe-github-analysis,
+    aqe-github-commit,aqe-knowledge-ingestion,aqe-test-generation,aqe-test-execution,
+    aqe-webpage-state-capture,aqe-website-execution,aqe-byoa
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: "1", memory: 1Gi}
+
+executionResources:
+  requests: {cpu: 500m, memory: 1Gi}
+  limits: {cpu: "2", memory: 3Gi}
+
+networkPolicy:
+  enabled: true
+  infrastructureNamespace: agentic-platform
+  messagingNamespace: messaging

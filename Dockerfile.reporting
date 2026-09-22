@@ -21,4 +21,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY service/reporing_service.py ./service/
 
 # Set the container's entrypoint
+USER 65532:65532
 CMD ["python", "service/reporing_service.py"]

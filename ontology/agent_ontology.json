@@ -1,0 +1,101 @@
+{
+  "ontology_id": "aqe-agent-ontology",
+  "version": "1.0.0",
+  "description": "Domain-neutral classification and quality obligations for internal and external agents.",
+  "dimensions": {
+    "interaction": ["request_response", "streaming", "event_driven", "human_in_the_loop", "multi_agent"],
+    "interface": ["agent_card", "a2a_jsonrpc", "rest", "graphql", "websocket", "kafka", "browser", "voice"],
+    "autonomy": ["advisory", "approval_gated", "bounded_action", "autonomous"],
+    "data_sensitivity": ["public", "internal", "personal", "financial", "health", "regulated"],
+    "impact": ["low", "moderate", "high", "safety_critical"]
+  },
+  "universal_obligations": [
+    "Validate the advertised Agent Card, version, skills, input modes, and output modes.",
+    "Test one observable outcome per test and preserve independent diagnostics.",
+    "Verify authorization, tenant isolation, least privilege, and secret non-disclosure.",
+    "Verify malformed, missing, oversized, duplicate, and adversarial inputs.",
+    "Verify timeout, retry, idempotency, cancellation, partial failure, and recovery behavior.",
+    "Verify trace correlation, structured errors, provenance, and audit events without sensitive payload leakage.",
+    "Evaluate quality against a versioned golden dataset and explicit acceptance threshold.",
+    "Test declared behavior only; do not infer a profession, permission, or guarantee absent from evidence."
+  ],
+  "archetypes": [
+    {
+      "id": "general_conversational",
+      "signals": ["chat", "assistant", "question answering", "conversation"],
+      "quality_attributes": ["relevance", "groundedness", "instruction hierarchy", "context retention", "safe refusal"],
+      "required_scenarios": ["multi-turn context", "ambiguous request", "unsupported claim", "prompt injection", "conversation reset"]
+    },
+    {
+      "id": "teaching_coaching",
+      "signals": ["teach", "tutor", "lesson", "coach", "assessment", "learner"],
+      "quality_attributes": ["pedagogical correctness", "adaptation", "age appropriateness", "feedback quality", "learner privacy"],
+      "required_scenarios": ["misconception correction", "adaptive difficulty", "rubric-based feedback", "no answer leakage", "learning-progress isolation"]
+    },
+    {
+      "id": "listening_transcription",
+      "signals": ["listen", "audio", "speech", "transcribe", "speaker", "meeting"],
+      "quality_attributes": ["transcription fidelity", "speaker attribution", "consent", "retention", "noise robustness"],
+      "required_scenarios": ["silence", "overlapping speakers", "accent variation", "background noise", "consent withdrawal", "audio deletion"]
+    },
+    {
+      "id": "finance",
+      "signals": ["finance", "bank", "payment", "trade", "credit", "portfolio", "invoice"],
+      "quality_attributes": ["numeric precision", "authorization", "idempotency", "auditability", "regulatory boundary"],
+      "required_scenarios": ["decimal and currency precision", "duplicate transaction", "stale market data", "approval threshold", "reconciliation", "prohibited advice disclaimer"]
+    },
+    {
+      "id": "insurance",
+      "signals": ["insurance", "policy", "claim", "underwriting", "coverage", "premium"],
+      "quality_attributes": ["policy grounding", "explainability", "fairness", "document provenance", "human escalation"],
+      "required_scenarios": ["coverage ambiguity", "claim evidence conflict", "adverse decision explanation", "protected-class proxy", "policy version change", "manual review handoff"]
+    },
+    {
+      "id": "healthcare",
+      "signals": ["health", "medical", "clinical", "patient", "diagnosis", "medication"],
+      "quality_attributes": ["clinical grounding", "safety escalation", "privacy", "uncertainty communication", "scope limitation"],
+      "required_scenarios": ["emergency escalation", "contraindication", "insufficient context", "record access control", "source citation", "non-diagnostic boundary"]
+    },
+    {
+      "id": "retrieval_research",
+      "signals": ["search", "retrieve", "research", "knowledge", "citation", "rag"],
+      "quality_attributes": ["retrieval recall", "citation fidelity", "freshness", "source authority", "conflict handling"],
+      "required_scenarios": ["no evidence", "conflicting sources", "stale source", "poisoned document", "citation-to-claim match", "tenant-filtered retrieval"]
+    },
+    {
+      "id": "action_transaction",
+      "signals": ["book", "buy", "send", "update", "delete", "execute", "provision"],
+      "quality_attributes": ["intent confirmation", "least privilege", "idempotency", "rollback", "side-effect visibility"],
+      "required_scenarios": ["dry run", "approval denied", "duplicate command", "partial action", "compensation", "permission revoked mid-run"]
+    },
+    {
+      "id": "multi_agent_orchestrator",
+      "signals": ["orchestrate", "delegate", "route", "supervisor", "workflow", "agent team"],
+      "quality_attributes": ["routing correctness", "handoff integrity", "bounded delegation", "loop prevention", "end-to-end traceability"],
+      "required_scenarios": ["unavailable specialist", "schema mismatch", "cyclic delegation", "mixed-version fleet", "partial result", "cancellation propagation"]
+    },
+    {
+      "id": "website_browser",
+      "signals": ["website", "browser", "page", "form", "visual", "checkout"],
+      "quality_attributes": ["accessibility", "resilient locators", "navigation", "session handling", "cross-state consistency"],
+      "required_scenarios": ["authenticated journey", "validation error", "loading state", "expired session", "keyboard interaction", "responsive viewport"]
+    }
+  ],
+  "risk_overlays": [
+    {
+      "id": "regulated_or_high_impact",
+      "when": ["financial", "health", "regulated", "high", "safety_critical"],
+      "obligations": ["Require authoritative evidence and uncertainty reporting.", "Verify human review and appeal paths.", "Measure subgroup outcomes for harmful disparity.", "Retain immutable decision provenance and policy/model versions."]
+    },
+    {
+      "id": "external_network",
+      "when": ["external"],
+      "obligations": ["Allowlist destinations and prevent SSRF.", "Use scoped target credentials only.", "Verify TLS identity, timeout, rate limits, and redacted diagnostics."]
+    },
+    {
+      "id": "side_effecting",
+      "when": ["bounded_action", "autonomous"],
+      "obligations": ["Test in an isolated sandbox or provider test tenant.", "Require idempotency keys and compensation evidence.", "Prove approval and authorization immediately before the side effect."]
+    }
+  ]
+}

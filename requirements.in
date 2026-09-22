@@ -1,17 +1,19 @@
 asyncpg               # PostgreSQL client
-minio                 # MinIO object storage client
+boto3                 # S3-compatible RustFS client
 qdrant-client         # Vector database client
 httpx
 python-dotenv
 redis
-minio
 aiokafka
 a2a-sdk[http-server]
 PyGithub
 playwright
 uvicorn
+prometheus-client
 click
 starlette
 sse-starlette
 psycopg2
 pytest
+pytest-playwright
+temporalio>=1.20,<2

@@ -12,12 +12,13 @@ anyio==4.11.0
     #   sse-starlette
     #   starlette
 argon2-cffi==25.1.0
-    # via minio
 argon2-cffi-bindings==25.1.0
     # via argon2-cffi
 async-timeout==4.0.3
     # via aiokafka
 asyncpg==0.30.0
+    # via -r requirements.in
+boto3==1.40.40
     # via -r requirements.in
 cachetools==6.2.0
     # via google-auth
@@ -25,7 +26,6 @@ certifi==2025.8.3
     # via
     #   httpcore
     #   httpx
-    #   minio
     #   requests
 cffi==2.0.0
     # via
@@ -78,8 +78,6 @@ idna==3.10
     #   requests
 iniconfig==2.1.0
     # via pytest
-minio==7.2.18
-    # via -r requirements.in
 numpy==2.3.3
     # via qdrant-client
 packaging==25.0
@@ -87,6 +85,7 @@ packaging==25.0
     #   aiokafka
     #   pytest
 playwright==1.55.0
+prometheus-client==0.22.1
     # via -r requirements.in
 pluggy==1.6.0
     # via pytest
@@ -112,7 +111,6 @@ pyasn1-modules==0.4.2
 pycparser==2.23
     # via cffi
 pycryptodome==3.23.0
-    # via minio
 pydantic==2.11.9
     # via
     #   a2a-sdk
@@ -131,6 +129,8 @@ pyjwt==2.10.1
 pynacl==1.6.0
     # via pygithub
 pytest==8.4.2
+    # via -r requirements.in
+pytest-playwright==0.7.1
     # via -r requirements.in
 python-dotenv==1.1.1
     # via -r requirements.in
@@ -161,7 +161,6 @@ typing-extensions==4.15.0
     #   anyio
     #   fastapi
     #   grpcio
-    #   minio
     #   pydantic
     #   pydantic-core
     #   pyee
@@ -170,9 +169,10 @@ typing-extensions==4.15.0
     #   typing-inspection
 typing-inspection==0.4.1
     # via pydantic
+temporalio==1.20.0
+    # via -r requirements.in
 urllib3==2.5.0
     # via
-    #   minio
     #   pygithub
     #   qdrant-client
     #   requests

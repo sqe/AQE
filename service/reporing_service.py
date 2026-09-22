@@ -33,10 +33,11 @@ def create_table_if_not_exists(conn: psycopg2.extensions.connection):
                 -- Core fields required by Test Generation Agent for initial persistence
                 app_id TEXT NOT NULL,
                 status TEXT NOT NULL,
-                minio_path TEXT NOT NULL,
+                object_path TEXT NOT NULL,
                 
                 generated_by_user_id TEXT, 
                 timestamp_created TIMESTAMPTZ DEFAULT NOW(),
+                timestamp_completed TIMESTAMPTZ,
                 
                 -- Fields primarily updated by Reporting Service or Execution Agent
                 url TEXT,
@@ -106,23 +107,25 @@ async def consume_reporting_events():
                     # SQL statement now uses task_id for conflict resolution
                     cursor.execute(
                         """
-                        INSERT INTO test_runs (task_id, url, timestamp, passed, summary, raw_code, data_artifact_version)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (task_id) DO UPDATE SET 
-                            timestamp = EXCLUDED.timestamp, 
-                            passed = EXCLUDED.passed, 
-                            summary = EXCLUDED.summary,
-                            raw_code = EXCLUDED.raw_code,
-                            data_artifact_version = EXCLUDED.data_artifact_version;
+                        UPDATE test_runs SET
+                            url = %s,
+                            timestamp_completed = %s,
+                            passed = %s,
+                            status = CASE WHEN %s THEN 'PASSED' ELSE 'FAILED' END,
+                            summary = %s,
+                            raw_code = COALESCE(NULLIF(%s, ''), raw_code),
+                            data_artifact_version = %s
+                        WHERE task_id = %s;
                         """,
                         (
-                            task_id,
                             url,
                             timestamp,
                             passed,
+                            passed,
                             json.dumps(summary),
                             raw_code,
-                            artifact_version
+                            artifact_version,
+                            task_id
                         )
                     )
                 conn.commit()

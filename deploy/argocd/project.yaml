@@ -1,0 +1,15 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: aqe
+  namespace: argocd
+spec:
+  description: AQE agentic quality-engineering automaton
+  sourceRepos: ["https://github.com/sqe/AQE.git"]
+  destinations:
+    - {server: "https://kubernetes.default.svc", namespace: aqe}
+  clusterResourceWhitelist:
+    - {group: "", kind: Namespace}
+  namespaceResourceWhitelist:
+    - {group: "*", kind: "*"}
+  orphanedResources: {warn: true}

@@ -1,0 +1,9 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: change-detection}
+spec:
+  module: agents.change_detection.app
+  port: 8000
+  cardPath: /agent_card
+  skills: [detect_change_and_orchestrate]
+  dependencies: [kafka, redis, test-generation, webpage-state-capture, agent-test-execution]

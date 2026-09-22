@@ -1,0 +1,10 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: website-test-execution}
+spec:
+  module: agents.website_execution.app
+  port: 8013
+  cardPath: /agent_card
+  skills: [qe.validate, qe.repair]
+  dependencies: [postgresql, rustfs, target-website]
+  testType: website

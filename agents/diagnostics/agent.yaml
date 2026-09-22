@@ -1,0 +1,9 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: diagnostics}
+spec:
+  module: agents.diagnostics.app
+  port: 8006
+  cardPath: /agent_card
+  skills: [diagnostics.scan, diagnostics.probe, diagnostics.heal]
+  dependencies: [agent-cards]

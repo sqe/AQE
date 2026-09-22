@@ -1,655 +1,237 @@
-/**
- * AQE Unified Orchestrator Frontend Application
- * Combines Agent Health Monitoring (Left) and the 5-Step QE Workflow (Right).
- *
- * NOTE: This file uses global variables (React, ReactDOM) instead of
- * ES Modules (import/export) to be compatible with the in-browser Babel compiler.
- */
+const { useEffect, useMemo, useState } = React;
 
-// We access React and hooks globally since they are loaded via CDN in index.html
-const { useState, useMemo, useEffect, useRef } = React; // Added useRef
-
-// --- API Endpoints (Must match exposed Docker ports) ---
-const API_ENDPOINTS = {
-    // Knowledge Ingestion Agent (llm_fine_tuning_agent:8004)
-    INGEST_KNOWLEDGE: 'http://localhost:8004/ingest_knowledge', 
-    // Capture Agent (webpage_state_capture_agent:8002)
-    CAPTURE: 'http://localhost:8002/capture', 
-    // Change Detection Agent (change_detection_agent:8000)
-    DETECT_CHANGES: 'http://localhost:8000/detect_changes',
-    // Test Generation Agent (test_generation_agent_multi_llm:8001)
-    GENERATE_PLAN: 'http://localhost:8001/generate_test_plan',
-    // Test Execution Agent (test_execution_agent:8003)
-    RUN_TESTS: 'http://localhost:8003/run_tests',
-};
-// --------------------------------------------------------
-
-/**
- * Agent Configuration for Health Monitoring
- */
-const AGENTS_CONFIG = [
-    { name: 'Artifact Manager', id: 'artifact_management_agent', port: 8007, icon: '📦' },
-    { name: 'Change Detection', id: 'change_detection_agent', port: 8000, icon: '🔍' },
-    { name: 'Test Generation', id: 'test_generation_agent', port: 8001, icon: '🧠' },
-    { name: 'State Capture', id: 'webpage_state_capture_agent', port: 8002, icon: '📸' },
-    { name: 'Test Execution', id: 'test_execution_agent', port: 8003, icon: '▶️' },
-    { name: 'Knowledge Ingestion', id: 'llm_fine_tuning_agent', port: 8004, icon: '📚' },
-];
-
-/**
- * AgentStatusPanel Component: Sidebar for Agent Health Monitoring
- */
-const AgentStatusPanel = ({ agentStatuses, onRefresh }) => {
-  const [lastRefreshed, setLastRefreshed] = useState(new Date());
-  
-  // Update the refresh time every time statuses are updated
-  useEffect(() => {
-    setLastRefreshed(new Date());
-  }, [agentStatuses]);
-
-  const getStatusIndicator = (status) => {
-    switch (status) {
-      case 'UP': return <div className="h-3 w-3 rounded-full bg-green-500 shadow-md ring-1 ring-green-300"></div>;
-      case 'DOWN': return <div className="h-3 w-3 rounded-full bg-red-500 shadow-md ring-1 ring-red-300"></div>;
-      case 'CHECKING': return <div className="h-3 w-3 rounded-full bg-yellow-500 shadow-md animate-pulse"></div>;
-      default: return <div className="h-3 w-3 rounded-full bg-gray-500"></div>;
-    }
-  };
-
-  const getStatusText = (status) => {
-    switch (status) {
-        case 'UP': return 'Running';
-        case 'DOWN': return 'Down';
-        case 'CHECKING': return 'Checking...';
-        default: return 'Unknown';
-    }
-  };
-
-  return (
-    <div className="p-6 bg-gray-900 border-r border-gray-700 shadow-2xl h-full overflow-y-auto w-80 fixed">
-      <h2 className="text-xl font-extrabold mb-4 flex items-center text-indigo-400 border-b border-gray-700 pb-3">
-        ⚡ Agent Health Monitor
-      </h2>
-      <div className="flex justify-between items-center mb-5">
-        <p className="text-xs text-gray-400 font-mono">Last scan: {lastRefreshed.toLocaleTimeString()}</p>
-        <button
-          onClick={onRefresh}
-          className="p-2 bg-indigo-600 text-white rounded-lg shadow-md hover:bg-indigo-500 transition duration-150 transform hover:scale-105"
-          title="Refresh All Statuses"
-        >
-          <span className="text-sm">🔄 Refresh</span>
-        </button>
-      </div>
-
-      <div className="space-y-3">
-        {AGENTS_CONFIG.map((agent) => (
-          <div
-            key={agent.id}
-            className="flex items-center justify-between p-3 bg-gray-800 rounded-xl transition duration-200 hover:bg-gray-700 hover:shadow-xl"
-          >
-            <div className="flex items-center">
-              <span className="text-xl mr-3">{agent.icon}</span>
-              <div className="text-sm font-medium text-white">
-                {agent.name}
-                <span className="text-xs text-gray-500 block">Port: {agent.port}</span>
-              </div>
-            </div>
-            <div className="flex items-center space-x-2 text-xs">
-              <span className={`font-semibold ${agentStatuses[agent.id] === 'UP' ? 'text-green-400' : agentStatuses[agent.id] === 'DOWN' ? 'text-red-400' : 'text-gray-400'}`}>
-                {getStatusText(agentStatuses[agent.id])}
-              </span>
-              {getStatusIndicator(agentStatuses[agent.id])}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+const API = {
+  workflows: "/api/workflows/v1/qe-runs",
+  diagnostics: "/api/diagnostics/v1/diagnostics",
+  heal: "/api/diagnostics/v1/diagnostics/heal",
+  probes: "/api/diagnostics/v1/agent-probes",
+  graph: "/api/diagnostics/v1/graph",
 };
 
-
-// Main App Component
-function App() {
-    // --- State Management for QE Workflow ---
-    const [currentUrl, setCurrentUrl] = useState('');
-    const [productSpec, setProductSpec] = useState(''); 
-    const [knowledgeBase, setKnowledgeBase] = useState(''); 
-    
-    const [status, setStatus] = useState('Idle'); 
-    const [currentAction, setCurrentAction] = useState(null); 
-    const [errorMessage, setErrorMessage] = useState(null); 
-    
-    // Core State Tracking for Change Detection
-    const [initialElements, setInitialElements] = useState([]); 
-    const [currentElements, setCurrentElements] = useState([]);   
-    const [detectedChanges, setDetectedChanges] = useState('');   
-    
-    const [testPlan, setTestPlan] = useState('');
-    const [testResults, setTestResults] = useState('');
-    const [ingestionStatus, setIngestionStatus] = useState(null); 
-    
-    // UI State: Task ID for display (may lag slightly behind ref)
-    const [taskId, setTaskId] = useState(null); 
-    // Ref: Task ID for guaranteed immediate access across sequential steps
-    const taskIdRef = useRef(null); 
-
-    // --- State Management for Agent Health ---
-    const [agentStatuses, setAgentStatuses] = useState(
-        AGENTS_CONFIG.reduce((acc, agent) => ({ ...acc, [agent.id]: 'UNKNOWN' }), {})
-    );
-
-    // --- Agent Health Check Logic ---
-    const checkAgentStatus = async (agent) => {
-        try {
-            // Using AbortSignal for a 3-second timeout
-            const response = await fetch(`http://localhost:${agent.port}/agent_card`, { signal: AbortSignal.timeout(3000) });
-            return response.ok ? 'UP' : 'DOWN';
-        } catch (error) {
-            return 'DOWN';
-        }
-    };
-
-    const pollAgentStatuses = async () => {
-        setAgentStatuses(prev => 
-            AGENTS_CONFIG.reduce((acc, agent) => ({ ...acc, [agent.id]: 'CHECKING' }), {})
-        );
-
-        const results = await Promise.all(
-            AGENTS_CONFIG.map(async (agent) => ({
-                id: agent.id,
-                status: await checkAgentStatus(agent),
-            }))
-        );
-
-        setAgentStatuses(results.reduce((acc, result) => ({ ...acc, [result.id]: result.status }), {}));
-    };
-
-    // Effect for initial load and periodic polling
-    useEffect(() => {
-        pollAgentStatuses(); 
-        const intervalId = setInterval(pollAgentStatuses, 10000); 
-        return () => clearInterval(intervalId);
-    }, []);
-    // ------------------------------------
-
-
-    // Helper for making standard API calls (for Capture, Detect, Generate, Run)
-    const apiCall = async (endpoint, payload) => {
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        
-        if (!response.ok) {
-            // The 400 Bad Request error sends JSON, so we handle that specifically
-            let errorText = await response.text();
-            try {
-                const errorJson = JSON.parse(errorText);
-                errorText = errorJson.error || errorText;
-            } catch {
-                // Ignore if not JSON
-            }
-            throw new Error(`Agent failed (${response.status}): ${errorText.substring(0, 100)}...`);
-        }
-        
-        return response.json();
-    };
-
-
-    // Handler for all primary actions
-    // NOTE: useCallback is still removed to ensure function gets the latest closure,
-    // but we rely on taskIdRef for the most critical sequencing (Generate -> Run).
-    const handleAction = async (actionType) => {
-        if (status === 'Loading') return;
-
-        setErrorMessage(null); 
-        setStatus('Loading');
-        setCurrentAction(actionType);
-        
-        console.log(`Context sent to LLM: Spec Length=${productSpec.length}, KB Length=${knowledgeBase.length}`);
-
-        try {
-            switch (actionType) {
-                
-                case 'IngestKnowledge':
-                    if (!productSpec) {
-                        setErrorMessage('Please provide Product Specification/Requirements to ingest.');
-                        break;
-                    }
-                    console.log('1. Invoking LLM Fine Tuning Agent for Knowledge Ingestion...');
-                    
-                    const response = await fetch(API_ENDPOINTS.INGEST_KNOWLEDGE, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ input_text: productSpec }) 
-                    });
-
-                    if (!response.ok) {
-                        const errorText = await response.text();
-                        throw new Error(`Knowledge Agent failed (${response.status}): ${errorText.substring(0, 100)}...`);
-                    }
-                    
-                    const a2aResult = await response.json();
-                    let finalMessage = "Knowledge Ingestion Complete.";
-                    
-                    if (a2aResult.events && a2aResult.events.length > 0) {
-                        const finalEvent = a2aResult.events.find(e => e.type === 'agent_text_message');
-                        if (finalEvent && finalEvent.text) {
-                            try {
-                                const result = JSON.parse(finalEvent.text);
-                                if (result.status === 'SUCCESS') {
-                                    finalMessage = `SUCCESS: ${result.message} (Version: ${result.rag_version_id || 'N/A'})`;
-                                    setIngestionStatus(finalMessage);
-                                } else {
-                                    throw new Error(result.error);
-                                }
-                            } catch (e) {
-                                finalMessage = finalEvent.text;
-                                setIngestionStatus(`Raw Response: ${finalMessage}`);
-                            }
-                        }
-                    } else {
-                         setIngestionStatus('Ingestion started, awaiting final status...');
-                    }
-
-                    console.log('1. Knowledge Ingestion Complete.');
-                    break;
-
-                case 'Capture':
-                    // 2. Capture Initial State
-                    console.log('2. Invoking Capture Agent for Initial State...');
-                    
-                    const initialCapturePayload = { url: currentUrl, state_type: 'initial', spec: productSpec, kb: knowledgeBase };
-                    const initialCaptureResponse = await apiCall(API_ENDPOINTS.CAPTURE, initialCapturePayload);
-                    
-                    setInitialElements(initialCaptureResponse.elements || []);
-                    setCurrentElements([]);
-                    setDetectedChanges('');
-                    setTestPlan('');
-                    setTestResults('');
-                    setIngestionStatus(null); 
-                    setTaskId(null); // Clear previous UI task ID
-                    taskIdRef.current = null; // Clear previous ref task ID
-                    
-                    console.log('2. Initial State Captured.');
-                    break;
-
-                case 'TriggerDetection':
-                    if (initialElements.length === 0) {
-                        setErrorMessage('Please capture the Initial State first.');
-                        break;
-                    }
-                    
-                    // 3a. Capture Current State (The change itself)
-                    console.log('3a. Invoking Capture Agent for Current State...');
-                    const currentCapturePayload = { url: currentUrl, state_type: 'current', spec: productSpec, kb: knowledgeBase };
-                    const currentCaptureResponse = await apiCall(API_ENDPOINTS.CAPTURE, currentCapturePayload);
-                    setCurrentElements(currentCaptureResponse.elements || []);
-
-                    // 3b. Run Change Detection Analysis
-                    console.log('3b. Invoking Change Detection Agent...');
-                    const detectionPayload = {
-                        initial_state: initialElements,
-                        current_state: currentCaptureResponse.elements,
-                        spec: productSpec, 
-                        kb: knowledgeBase
-                    };
-                    const detectionResponse = await apiCall(API_ENDPOINTS.DETECT_CHANGES, detectionPayload);
-                    setDetectedChanges(detectionResponse.analysis || 'No changes detected by LLM analysis.');
-                    
-                    console.log('3. Change Detection Complete (LLM Analysis Ready).');
-                    break;
-                    
-                case 'Generate':
-                    if (!detectedChanges) {
-                        setErrorMessage('Please Trigger Change Detection first.');
-                        break;
-                    }
-
-                    // 4. Generate Test Plan
-                    console.log('4. Invoking Test Generation Agent...');
-                    const generationPayload = {
-                        url: currentUrl,
-                        detected_changes_report: detectedChanges,
-                        spec: productSpec, 
-                        kb: knowledgeBase
-                    };
-                    const generationResponse = await apiCall(API_ENDPOINTS.GENERATE_PLAN, generationPayload);
-                    
-                    // --- CRITICAL: Capture the task_id and update both ref (immediate use) and state (UI) ---
-                    const newTaskId = generationResponse.task_id;
-                    setTaskId(newTaskId);          // For UI (status bar)
-                    taskIdRef.current = newTaskId; // For immediate use in the next step ('Run')
-                    // -----------------------------------------------------------------------------------------
-
-                    // The agent returns a simple confirmation message or plan summary in test_plan
-                    setTestPlan(generationResponse.test_plan || `Test artifact stored with Task ID: ${newTaskId}.`);
-                    
-                    console.log(`4. Test Plan Generated! Task ID: ${newTaskId}`);
-                    break;
-                    
-                case 'Run':
-                    // --- CRITICAL: Read the ID from the Ref, which is guaranteed to be the latest value ---
-                    const executionId = taskIdRef.current;
-                    
-                    if (!testPlan || !executionId) { 
-                        setErrorMessage(`Please Generate a Test Plan first (Step 4 failed to provide a Task ID or the ID was lost). Current ID in Ref: ${executionId}`);
-                        break;
-                    }
-
-                    console.log(`DEBUG: Executing tests with Task ID: ${executionId}`);
-
-                    // 5. Run Test
-                    console.log('5. Invoking Test Execution Agent...');
-                    
-                    // --- The payload MUST contain 'task_id' for persistence lookup ---
-                    const executionPayload = {
-                        task_id: executionId, // Use the ID guaranteed by the Ref
-                    };
-                    // -----------------------------------------------------------------------------
-                    
-                    const executionResponse = await apiCall(API_ENDPOINTS.RUN_TESTS, executionPayload);
-                    
-                    // Use JSON.stringify for cleaner display of the structured result dict
-                    setTestResults(JSON.stringify(executionResponse, null, 2) || 'Test execution summary missing.');
-                    console.log(`5. Test Run Complete: ${JSON.stringify(executionResponse.summary) || 'Summary N/A'}`);
-                    break;
-                    
-                case 'Clear':
-                    setInitialElements([]);
-                    setCurrentElements([]);
-                    setDetectedChanges('');
-                    setTestPlan('');
-                    setTestResults('');
-                    setCurrentUrl('');
-                    setProductSpec('');
-                    setKnowledgeBase('');
-                    setIngestionStatus(null);
-                    setTaskId(null);
-                    taskIdRef.current = null; // Clear the ref as well
-                    console.log('Console Cleared.');
-                    break;
-                default:
-                    setErrorMessage('Unknown Action.');
-            }
-        } catch (error) {
-            console.error('Agent API Error:', error);
-            setErrorMessage(error.message || 'An unknown API error occurred.');
-        } finally {
-            if (actionType !== 'IngestKnowledge') {
-                setStatus('Idle');
-                setCurrentAction(null);
-            }
-        }
-    }; // Removed dependency array
-
-    // Determines button styling based on current action state
-    const getButtonClass = (action) => {
-        const base = "px-4 py-3 text-sm font-semibold rounded-xl shadow-lg transition duration-200 transform hover:scale-[1.01] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center tracking-wider";
-        const isLoading = status === 'Loading' && currentAction === action;
-
-        if (isLoading) {
-             return `${base} bg-yellow-500 text-white animate-pulse shadow-yellow-700/50`;
-        }
-
-        switch (action) {
-            case 'IngestKnowledge':
-                return `${base} bg-pink-600 text-white hover:bg-pink-700 shadow-pink-600/30`;
-            case 'Capture':
-                return `${base} bg-blue-600 text-white hover:bg-blue-700 shadow-blue-600/30`;
-            case 'TriggerDetection':
-                return `${base} bg-purple-600 text-white hover:bg-purple-700 shadow-purple-600/30`;
-            case 'Generate':
-                return `${base} bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-600/30`;
-            case 'Run':
-                return `${base} bg-green-600 text-white hover:bg-green-700 shadow-green-600/30`;
-            case 'Clear':
-                return `${base} bg-gray-500 text-white hover:bg-gray-600 shadow-gray-500/30`;
-            default:
-                return base;
-        }
-    };
-
-    const isActionDisabled = status === 'Loading';
-    const isLoading = status === 'Loading';
-    const currentTaskId = taskIdRef.current; // Use the ref for button check
-
-    // Status message display
-    const statusMessage = useMemo(() => {
-        if (isLoading) {
-            return `Working: Invoking ${currentAction} Agent... Please wait.`;
-        }
-        if (errorMessage) {
-            return `🚨 ERROR: ${errorMessage}`;
-        }
-        if (testResults) {
-            return `✅ TESTS FINISHED! See details below.`;
-        }
-        if (testPlan) {
-            return `4. Test Artifact stored (Task ID: ${currentTaskId}). Ready to execute test run.`;
-        }
-        if (detectedChanges) {
-            return '3. Change detection complete. Ready to generate test plan targeting changes.';
-        }
-        if (initialElements.length > 0 && currentElements.length === 0) {
-            return '2. Initial state captured. Ready to trigger change detection.';
-        }
-        if (ingestionStatus) {
-            return ingestionStatus;
-        }
-        return 'Enter the target URL, provide context, and begin the workflow with Step 1 or 2.';
-    }, [isLoading, currentAction, initialElements.length, currentElements.length, detectedChanges, testPlan, testResults, errorMessage, ingestionStatus, currentTaskId]);
-
-
-    // Helper for rendering element lists
-    const ElementList = ({ title, elements, color }) => (
-        <div className={`border-l-4 ${color === 'blue' ? 'border-blue-500' : color === 'purple' ? 'border-purple-500' : 'border-gray-500'} pl-4`}>
-            <h2 className="text-lg font-bold text-gray-800 mb-3">
-                {title} <span className="text-sm font-normal text-gray-500">({elements.length} elements)</span>
-            </h2>
-            {elements.length === 0 ? (
-                <p className="text-gray-500 italic text-sm">No elements in this state have been captured yet.</p>
-            ) : (
-                <ul className="space-y-3 max-h-64 overflow-y-auto">
-                    {elements.map((el, index) => (
-                        <li key={index} className="p-3 bg-white rounded-lg text-xs border border-gray-200 shadow-sm transition hover:shadow-md">
-                            <code className="font-mono text-gray-500 mr-2">&lt;{el.tag}&gt;</code>
-                            <strong className="text-indigo-600">{el.text || el.name || 'N/A'}</strong>
-                            <span className="ml-3 text-red-500 font-mono text-[10px] bg-red-50 px-2 py-1 rounded-full">{el.selector}</span>
-                        </li>
-                    ))}
-                </ul>
-            )}
-        </div>
-    );
-
-    // --- Render Logic ---
-    return (
-        <div className="min-h-screen bg-gray-50 font-sans antialiased flex">
-             {/* Left Sidebar for Agent Status (Fixed width) */}
-            <div className="w-80 flex-shrink-0">
-                <AgentStatusPanel 
-                    agentStatuses={agentStatuses} 
-                    onRefresh={pollAgentStatuses} 
-                />
-            </div>
-            
-            {/* Main Content Area (QE Orchestrator) */}
-            <div className="flex-grow p-10 ml-80 overflow-y-auto">
-                <div className="max-w-7xl w-full bg-white shadow-3xl rounded-xl border border-gray-100 p-8">
-                    <h1 className="text-4xl font-extrabold text-gray-900 border-b-4 border-indigo-500 pb-3 mb-8">
-                        Agentic Quality Engineering (AQE) Console
-                    </h1>
-                    
-                    {/* Status Bar */}
-                    <div className={`p-4 mb-6 rounded-xl border-l-4 ${errorMessage ? 'border-red-500 bg-red-50 text-red-800' : isLoading ? 'border-yellow-500 bg-yellow-50 text-yellow-800' : 'border-green-500 bg-green-50 text-green-800'}`}>
-                        <p className="text-lg font-medium">
-                            <span className="font-bold mr-2">Status:</span>
-                            {statusMessage}
-                        </p>
-                    </div>
-
-                    {/* Inputs & Context */}
-                    <div className="space-y-6 mb-8 p-6 border rounded-xl bg-gray-50">
-                        <label className="block text-sm font-bold text-gray-700 mb-1">Target Application URL</label>
-                        <input
-                            type="url"
-                            value={currentUrl}
-                            onChange={(e) => setCurrentUrl(e.target.value)}
-                            placeholder="e.g., http://localhost:3000/ (Required for Capture and Run)"
-                            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 transition duration-150 shadow-inner"
-                        />
-                        
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div>
-                                <label className="block text-sm font-bold text-gray-700 mb-1">Product Specification/Requirements (RAG Source)</label>
-                                <textarea
-                                    value={productSpec}
-                                    onChange={(e) => setProductSpec(e.target.value)}
-                                    placeholder="Paste latest requirements here to train the RAG knowledge base. (Used in Step 1)"
-                                    rows="5"
-                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 transition duration-150 resize-none shadow-inner"
-                                ></textarea>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-bold text-gray-700 mb-1">Knowledge Base/Known Issues (Agent Context)</label>
-                                <textarea
-                                    value={knowledgeBase}
-                                    onChange={(e) => setKnowledgeBase(e.target.value)}
-                                    placeholder="Paste runbooks, known issues, or general context here. (Used in all subsequent steps)"
-                                    rows="5"
-                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 transition duration-150 resize-none shadow-inner"
-                                ></textarea>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* --- Action Buttons (The 5-Step Workflow) --- */}
-                    <div className="flex flex-wrap gap-4 justify-between border-t border-gray-200 pt-6">
-                        {/* STEP 1: Ingest Knowledge */}
-                        <button
-                            onClick={() => handleAction('IngestKnowledge')}
-                            disabled={isActionDisabled || !productSpec}
-                            className={getButtonClass('IngestKnowledge')}
-                        >
-                            <span className="text-xl mr-2">1.</span> Ingest RAG Knowledge
-                        </button>
-                        
-                        {/* STEP 2: Capture */}
-                        <button
-                            onClick={() => handleAction('Capture')}
-                            disabled={isActionDisabled || !currentUrl}
-                            className={getButtonClass('Capture')}
-                        >
-                            <span className="text-xl mr-2">2.</span> Capture Initial State
-                        </button>
-                        
-                        {/* STEP 3: Detect */}
-                        <button
-                            onClick={() => handleAction('TriggerDetection')}
-                            disabled={isActionDisabled || initialElements.length === 0}
-                            className={getButtonClass('TriggerDetection')}
-                        >
-                            <span className="text-xl mr-2">3.</span> Change Detection
-                        </button>
-                        
-                        {/* STEP 4: Generate */}
-                        <button
-                            onClick={() => handleAction('Generate')}
-                            disabled={isActionDisabled || !detectedChanges}
-                            className={getButtonClass('Generate')}
-                        >
-                            <span className="text-xl mr-2">4.</span> Generate Test Plan
-                        </button>
-                        
-                        {/* STEP 5: Run */}
-                        <button
-                            onClick={() => handleAction('Run')}
-                            disabled={isActionDisabled || !testPlan || !currentTaskId} // Check against the ref for reliability
-                            className={getButtonClass('Run')}
-                        >
-                            <span className="text-xl mr-2">5.</span> Execute Test Run
-                        </button>
-
-                        <button
-                            onClick={() => handleAction('Clear')}
-                            disabled={isActionDisabled}
-                            className={getButtonClass('Clear')}
-                        >
-                            <span className="text-lg mr-2">🧹</span> Clear All Data
-                        </button>
-                    </div>
-
-
-                    {/* --- Output Panes (Results) --- */}
-                    <div className="mt-10 grid grid-cols-1 lg:grid-cols-3 gap-8">
-                        
-                        {/* Initial Captured Elements */}
-                        <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
-                            <ElementList 
-                                title="Initial Captured State (Before Change)" 
-                                elements={initialElements} 
-                                color="blue"
-                            />
-                        </div>
-
-                        {/* Current Captured Elements (After Change) */}
-                        <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
-                            <ElementList 
-                                title="Current Captured State (After Change)" 
-                                elements={currentElements} 
-                                color="purple"
-                            />
-                        </div>
-                        
-                        {/* LLM Analysis & Results */}
-                        <div className="bg-white p-4 rounded-xl shadow-lg border border-gray-200">
-                            <div className="border-l-4 border-indigo-500 pl-4">
-                                <h2 className="text-lg font-bold text-gray-800 mb-3">
-                                    LLM Analysis & Test Results
-                                </h2>
-                                <div className="text-sm max-h-72 overflow-y-auto bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                    {testResults ? (
-                                        // Test Run Results
-                                        <div className="p-3 border border-green-400 rounded bg-green-100 text-green-800">
-                                            <h3 className="font-bold mb-1">Test Execution Summary (Step 5)</h3>
-                                            {/* Pre-formatted output of the JSON result */}
-                                            <pre className="text-xs whitespace-pre-wrap font-mono">{testResults}</pre>
-                                        </div>
-                                    ) : detectedChanges ? (
-                                        // Change Detection Output
-                                        <div className="p-3 border border-purple-400 rounded bg-purple-100 text-purple-800">
-                                            <h3 className="font-bold mb-1">Change Detection Report (Step 3)</h3>
-                                            <pre className="text-xs whitespace-pre-wrap font-mono">{detectedChanges}</pre>
-                                        </div>
-                                    ) : testPlan ? (
-                                        // Test Plan Output
-                                        <div className="p-3 border border-indigo-400 rounded bg-indigo-100 text-indigo-800">
-                                            <h3 className="font-bold mb-1">Generated Test Plan (Step 4)</h3>
-                                            <pre className="text-xs whitespace-pre-wrap font-mono">{testPlan}</pre>
-                                        </div>
-                                    ) : ingestionStatus ? (
-                                        // Ingestion Status Output
-                                        <div className={`p-3 border rounded ${ingestionStatus.includes('SUCCESS') ? 'border-pink-400 bg-pink-100 text-pink-800' : 'border-red-400 bg-red-100 text-red-800'}`}>
-                                            <h3 className="font-bold mb-1">Knowledge Ingestion Status (Step 1)</h3>
-                                            <pre className="text-xs whitespace-pre-wrap font-mono">{ingestionStatus}</pre>
-                                        </div>
-                                    ) : (
-                                        <p className="text-gray-500 italic">LLM analysis or test plan output will appear here as the workflow progresses.</p>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
+function Stamp({ state }) {
+  return <span className={`stamp ${state}`}>[{state.toUpperCase()}]</span>;
 }
 
-// --- RENDERING (Must be included in app.jsx for this setup) ---
-const container = document.getElementById('root');
-const root = ReactDOM.createRoot(container);
-root.render(<App />);
+function Panel({ index, title, action, children }) {
+  return (
+    <section className="panel">
+      <header className="panel-title">
+        <span><b>{index}</b> // {title}</span>
+        {action}
+      </header>
+      {children}
+    </section>
+  );
+}
 
+function TopologyGraph({ graph, selected, onSelect }) {
+  const groups = { agent: 0, target_agent: 1, orchestrator: 2, generated_test: 2, knowledge: 3, evidence: 3, state: 3, catalog: 3 };
+  const columns = [150, 365, 580, 820];
+  const grouped = graph.nodes.reduce((result, node) => {
+    const column = groups[node.type] ?? 1;
+    (result[column] ||= []).push(node);
+    return result;
+  }, {});
+  const positions = {};
+  Object.entries(grouped).forEach(([column, nodes]) => nodes.forEach((node, index) => {
+    positions[node.id] = { x: columns[column], y: 50 + ((index + 1) * 380) / (nodes.length + 1) };
+  }));
+  const visibleEdges = graph.edges.filter((edge) => positions[edge.source] && positions[edge.target]);
+  const selectedEdges = selected ? graph.edges.filter((edge) => edge.source === selected.id || edge.target === selected.id) : [];
+  return (
+    <div className="graph-layout">
+      <svg className="topology" viewBox="0 0 960 480" role="img" aria-label="Live AQE agent interaction graph">
+        <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" /></marker></defs>
+        {visibleEdges.map((edge, index) => {
+          const source = positions[edge.source]; const target = positions[edge.target];
+          return <line key={`${edge.source}-${edge.target}-${index}`} className={edge.type === "generated" ? "edge live" : "edge"} x1={source.x} y1={source.y} x2={target.x} y2={target.y}><title>{edge.type}: {edge.source} → {edge.target}</title></line>;
+        })}
+        {graph.nodes.map((node) => {
+          const point = positions[node.id]; if (!point) return null;
+          return <g key={node.id} className={`graph-node ${node.type} ${selected?.id === node.id ? "selected" : ""}`} transform={`translate(${point.x},${point.y})`} onClick={() => onSelect(node)} onKeyDown={(event) => event.key === "Enter" && onSelect(node)} tabIndex="0" role="button">
+            <circle r={node.type === "generated_test" ? 9 : 13} /><text y="-20">{node.name}</text><text className="node-type" y="30">{node.type}</text>
+          </g>;
+        })}
+      </svg>
+      <aside className="node-detail">
+        <small>SELECTED ENTITY</small>
+        {selected ? <><h3>{selected.name}</h3><dl><dt>TYPE</dt><dd>{selected.type}</dd><dt>STATUS</dt><dd>{selected.status || "n/a"}</dd><dt>VERSION</dt><dd>{selected.version || "n/a"}</dd><dt>ONTOLOGY</dt><dd>{selected.archetype || "unclassified"}</dd><dt>SKILLS</dt><dd>{(selected.skills || []).join(", ") || "n/a"}</dd><dt>INTERACTIONS</dt><dd>{selectedEdges.map((edge) => `${edge.type} → ${edge.source === selected.id ? edge.target : edge.source}`).join(" | ") || "n/a"}</dd></dl></> : <p>select a node to inspect its contract and interactions_</p>}
+      </aside>
+    </div>
+  );
+}
+
+function App() {
+  const [diagnostics, setDiagnostics] = useState({ status: "checking", healthy: 0, total: 0, agents: [] });
+  const [run, setRun] = useState({ url: "", spec: "", test_type: "agent", source_repository: "", source_ref: "", repair: true });
+  const [runResult, setRunResult] = useState(null);
+  const [probe, setProbe] = useState({ card_url: "", expected_skills: "" });
+  const [probeResult, setProbeResult] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [events, setEvents] = useState(["console initialized", "waiting for automaton input"]);
+  const [graph, setGraph] = useState({ nodes: [], edges: [], events: [], stats: { node_count: 0, edge_count: 0 } });
+  const [selectedNode, setSelectedNode] = useState(null);
+
+  const log = (message) => setEvents((current) => [message, ...current].slice(0, 8));
+
+  const request = async (url, options = {}) => {
+    const response = await fetch(url, options);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+    return payload;
+  };
+
+  const scan = async (heal = false) => {
+    setBusy("scan");
+    try {
+      const result = await request(heal ? API.heal : API.diagnostics, heal ? { method: "POST" } : {});
+      setDiagnostics(result);
+      log(`${heal ? "safe-heal" : "scan"}: ${result.healthy}/${result.total} agents healthy`);
+    } catch (error) {
+      setDiagnostics((current) => ({ ...current, status: "offline" }));
+      log(`diagnostics unavailable: ${error.message}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  useEffect(() => {
+    scan();
+    const refreshGraph = () => request(API.graph).then(setGraph).catch((error) => log(`graph unavailable: ${error.message}`));
+    refreshGraph();
+    const timer = setInterval(() => scan(), 15000);
+    const graphTimer = setInterval(refreshGraph, 5000);
+    return () => { clearInterval(timer); clearInterval(graphTimer); };
+  }, []);
+
+  const startRun = async (event) => {
+    event.preventDefault();
+    setBusy("run");
+    setRunResult(null);
+    try {
+      const result = await request(API.workflows, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(run),
+      });
+      setRunResult(result);
+      log(`workflow accepted: ${result.workflow_id}`);
+    } catch (error) {
+      setRunResult({ error: error.message });
+      log(`workflow rejected: ${error.message}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const testAgent = async (event) => {
+    event.preventDefault();
+    setBusy("probe");
+    setProbeResult(null);
+    try {
+      const expected_skills = probe.expected_skills.split(",").map((item) => item.trim()).filter(Boolean);
+      const result = await request(API.probes, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ card_url: probe.card_url, expected_skills }),
+      });
+      setProbeResult(result);
+      log(`agent probe: ${result.name} ${result.status}`);
+    } catch (error) {
+      setProbeResult({ status: "unhealthy", recommendation: error.message });
+      log(`agent probe failed: ${error.message}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const systemState = useMemo(() => {
+    if (diagnostics.status === "healthy") return "healthy";
+    if (diagnostics.status === "checking") return "checking";
+    return "degraded";
+  }, [diagnostics.status]);
+
+  return (
+    <main className="shell">
+      <header className="masthead">
+        <div>
+          <p className="eyebrow">AUTONOMOUS QUALITY ENGINEERING / CONTROL PLANE</p>
+          <h1><span>aqe</span>::automata</h1>
+        </div>
+        <div className="system-state">
+          <small>SYSTEM STATE</small>
+          <Stamp state={systemState} />
+        </div>
+      </header>
+
+      <div className="rule"><span>GENERATE</span><i /><span>EXECUTE</span><i /><span>DIAGNOSE</span><i /><span>REPAIR</span></div>
+
+      <div className="grid primary-grid">
+        <Panel index="01" title="START QE AUTOMATON">
+          <form onSubmit={startRun}>
+            <label>TARGET URL</label>
+            <input type="url" required placeholder="https://system-under-test.example" value={run.url} onChange={(event) => setRun({ ...run, url: event.target.value })} />
+            <label>TEST RUNTIME</label>
+            <select value={run.test_type} onChange={(event) => setRun({ ...run, test_type: event.target.value })}>
+              <option value="agent">AGENT / HTTP + AGENT CARD</option>
+              <option value="website">WEBSITE / PLAYWRIGHT BROWSER</option>
+            </select>
+            <label>GITHUB SOURCE <em>optional owner/repo + commit</em></label>
+            <div className="inline-fields">
+              <input placeholder="owner/agent-repository" value={run.source_repository} onChange={(event) => setRun({ ...run, source_repository: event.target.value })} />
+              <input placeholder="commit SHA / tag" required={Boolean(run.source_repository)} value={run.source_ref} onChange={(event) => setRun({ ...run, source_ref: event.target.value })} />
+            </div>
+            <label>OBSERVABLE BEHAVIOR</label>
+            <textarea required rows="5" placeholder="Describe the user journey and expected outcome." value={run.spec} onChange={(event) => setRun({ ...run, spec: event.target.value })} />
+            <div className="command-row">
+              <label className="toggle"><input type="checkbox" checked={run.repair} onChange={(event) => setRun({ ...run, repair: event.target.checked })} /> REPAIR LOOP</label>
+              <button disabled={busy === "run"}>{busy === "run" ? "DISPATCHING..." : "RUN AUTOMATON →"}</button>
+            </div>
+          </form>
+          {runResult && <pre className="result">{JSON.stringify(runResult, null, 2)}</pre>}
+        </Panel>
+
+        <Panel index="02" title="AGENT FLEET" action={<button className="ghost" onClick={() => scan(true)} disabled={busy === "scan"}>SAFE HEAL</button>}>
+          <div className="fleet-summary"><strong>{diagnostics.healthy}/{diagnostics.total}</strong><span>contracts online</span></div>
+          <div className="agent-list">
+            {diagnostics.agents.length === 0 && <p className="empty">diagnostic agent is waiting for a fleet response_</p>}
+            {diagnostics.agents.map((agent) => (
+              <article className="agent-row" key={agent.name}>
+                <div><b>{agent.name}</b><small>{agent.identity || "no identity"}</small></div>
+                <Stamp state={agent.status} />
+                {agent.recommendation && <p>{agent.recommendation}</p>}
+              </article>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <Panel index="03" title="LIVE AGENT + TEST GRAPH" action={<span className="graph-stats">{graph.stats.node_count}N / {graph.stats.edge_count}E // POLL 5S</span>}>
+        <TopologyGraph graph={graph} selected={selectedNode} onSelect={setSelectedNode} />
+      </Panel>
+
+      <div className="grid secondary-grid">
+        <Panel index="04" title="PROBE ANY AGENT">
+          <form onSubmit={testAgent}>
+            <label>AGENT CARD URL</label>
+            <input type="url" required placeholder="https://agent.example/.well-known/agent.json" value={probe.card_url} onChange={(event) => setProbe({ ...probe, card_url: event.target.value })} />
+            <label>EXPECTED SKILLS <em>comma separated</em></label>
+            <input placeholder="research.run, report.generate" value={probe.expected_skills} onChange={(event) => setProbe({ ...probe, expected_skills: event.target.value })} />
+            <button disabled={busy === "probe"}>{busy === "probe" ? "PROBING..." : "VALIDATE CONTRACT →"}</button>
+          </form>
+          {probeResult && <pre className="result">{JSON.stringify(probeResult, null, 2)}</pre>}
+        </Panel>
+
+        <Panel index="05" title="EVENT STREAM">
+          <ol className="events">
+            {events.map((event, index) => <li key={`${event}-${index}`}><time>{String(index).padStart(2, "0")}</time><span>{event}</span></li>)}
+          </ol>
+        </Panel>
+      </div>
+
+      <footer><span>AQE/2.0</span><span>Temporal durable state</span><span>RustFS evidence store</span><span>one observable outcome / test</span></footer>
+    </main>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);

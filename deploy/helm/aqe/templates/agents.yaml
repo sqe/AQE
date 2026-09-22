@@ -1,0 +1,81 @@
+{{- $root := . -}}
+{{- range $name, $agent := .Values.agents }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aqe-{{ $name }}
+  labels:
+    {{- include "aqe.componentLabels" (dict "root" $root "component" $name) | nindent 4 }}
+spec:
+  replicas: {{ $root.Values.replicaCount }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: aqe-{{ $name }}}
+  template:
+    metadata:
+      labels:
+        {{- include "aqe.componentLabels" (dict "root" $root "component" $name) | nindent 8 }}
+      annotations:
+        checksum/config: {{ toJson $root.Values.config | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: {{ $agent.image | quote }}
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: {{ $agent.port }} }]
+          env:
+            - {name: AGENT_PORT, value: {{ $agent.port | quote }}}
+            - {name: GRAPH_API_URL, value: "http://aqe-diagnostics:8006/v1/graph/events"}
+            - {name: GITHUB_SOURCE_ALLOWED_REPOSITORIES, value: {{ $root.Values.config.githubSourceAllowedRepositories | quote }}}
+            - {name: AGENT_PROBE_ALLOWED_HOSTS, value: {{ $root.Values.config.agentProbeAllowedHosts | quote }}}
+            - {name: AGENT_CARD_URLS, value: "artifact-management=http://aqe-artifact-management:8007/agent_card,change-detection=http://aqe-change-detection:8000/agent_card,diagnostics=http://aqe-diagnostics:8006/agent_card,github-analysis=http://aqe-github-analysis:8010/agent_card,github-commit=http://aqe-github-commit:8011/agent_card,knowledge-ingestion=http://aqe-knowledge-ingestion:8004/agent_card,test-generation=http://aqe-test-generation:8001/agent_card,test-execution=http://aqe-test-execution:8003/agent_card,webpage-state-capture=http://aqe-webpage-state-capture:8002/agent_card,website-execution=http://aqe-website-execution:8013/agent_card,aqe-byoa=http://aqe-byoa:8009/.well-known/agent.json"}
+            - {name: STATE_CAPTURE_URL, value: "http://aqe-webpage-state-capture:8002"}
+            - {name: TEST_GENERATION_URL, value: "http://aqe-test-generation:8001"}
+            - {name: AGENT_TEST_EXECUTION_URL, value: "http://aqe-test-execution:8003"}
+            {{- with $agent.testType }}
+            - {name: TEST_EXECUTION_MODE, value: {{ . | quote }}}
+            {{- end }}
+            {{- include "aqe.env" $root | nindent 12 }}
+          envFrom:
+            - secretRef: {name: {{ $root.Values.secretName }}, optional: false}
+          startupProbe:
+            httpGet: {path: /agent_card, port: http}
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet: {path: /agent_card, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /agent_card, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml (ternary $root.Values.executionResources $root.Values.resources (hasKey $agent "testType")) | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 2Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aqe-{{ $name }}
+  labels:
+    {{- include "aqe.componentLabels" (dict "root" $root "component" $name) | nindent 4 }}
+spec:
+  selector: {app.kubernetes.io/name: aqe-{{ $name }} }
+  ports: [{name: http, port: {{ $agent.port }}, targetPort: http}]
+{{- end }}

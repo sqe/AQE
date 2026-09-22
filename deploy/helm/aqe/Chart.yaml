@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aqe
+description: Compound quality-engineering agent with Temporal and BYOA integration
+type: application
+version: 0.1.0
+appVersion: "2.0.0"

@@ -57,7 +57,7 @@ if __name__ == "__main__":
         logger.error("Usage: python local_runner.py <module.path.to.agent>")
         sys.exit(1)
 
-    module_path = sys.argv[1].replace('.py', '') # e.g., agents.change_detection_agent
+    module_path = sys.argv[1].replace('.py', '')  # e.g., agents.change_detection.app
     
     try:
         # Load the module dynamically

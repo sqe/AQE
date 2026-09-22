@@ -1,0 +1,9 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: artifact-management}
+spec:
+  module: agents.artifact_management.app
+  port: 8007
+  cardPath: /agent_card
+  skills: [upload_artifact]
+  dependencies: [postgresql, rustfs]

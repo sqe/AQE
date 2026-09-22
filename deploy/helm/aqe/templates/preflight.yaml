@@ -1,0 +1,80 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-preflight
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: aqe-preflight}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: diagnostics
+          image: {{ (index .Values.agents "diagnostics").image | quote }}
+          command: [python, -m, agents.diagnostics.preflight]
+          envFrom:
+            - secretRef: {name: {{ .Values.secretName }}, optional: false}
+          env:
+            - {name: OBJECT_STORE_ENDPOINT, value: {{ .Values.config.objectStoreEndpoint | quote }}}
+            - {name: KAFKA_BOOTSTRAP_SERVERS, value: {{ .Values.config.kafkaBootstrapServers | quote }}}
+            - {name: TEMPORAL_ADDRESS, value: {{ .Values.config.temporalAddress | quote }}}
+            - {name: MODEL_HEALTH_URL, value: {{ .Values.config.modelHealthUrl | quote }}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-agent-validation
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: aqe-agent-validation}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: diagnostics
+          image: {{ (index .Values.agents "diagnostics").image | quote }}
+          command: [python, -m, agents.diagnostics.preflight]
+          envFrom:
+            - secretRef: {name: {{ .Values.secretName }}, optional: false}
+          env:
+            - {name: OBJECT_STORE_ENDPOINT, value: {{ .Values.config.objectStoreEndpoint | quote }}}
+            - {name: KAFKA_BOOTSTRAP_SERVERS, value: {{ .Values.config.kafkaBootstrapServers | quote }}}
+            - {name: TEMPORAL_ADDRESS, value: {{ .Values.config.temporalAddress | quote }}}
+            - {name: AGENT_CARD_URLS, value: "artifact-management=http://aqe-artifact-management:8007/agent_card,change-detection=http://aqe-change-detection:8000/agent_card,diagnostics=http://aqe-diagnostics:8006/agent_card,github-analysis=http://aqe-github-analysis:8010/agent_card,github-commit=http://aqe-github-commit:8011/agent_card,knowledge-ingestion=http://aqe-knowledge-ingestion:8004/agent_card,test-generation=http://aqe-test-generation:8001/agent_card,test-execution=http://aqe-test-execution:8003/agent_card,webpage-state-capture=http://aqe-webpage-state-capture:8002/agent_card,website-execution=http://aqe-website-execution:8013/agent_card,aqe-byoa=http://aqe-byoa:8009/.well-known/agent.json"}
+            - {name: AGENT_PROBE_ALLOWED_HOSTS, value: {{ .Values.config.agentProbeAllowedHosts | quote }}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-ontology-ingestion
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: aqe-ontology-ingestion}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ontology-ingestion
+          image: {{ (index .Values.agents "knowledge-ingestion").image | quote }}
+          command: [python, -c]
+          args:
+            - >-
+              import urllib.request;
+              request=urllib.request.Request('http://aqe-knowledge-ingestion:8004/ingest_ontology', data=b'{}', method='POST');
+              response=urllib.request.urlopen(request, timeout=60);
+              assert response.status == 200

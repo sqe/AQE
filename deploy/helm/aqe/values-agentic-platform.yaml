@@ -1,0 +1,12 @@
+# Integration profile for the neighboring agentic-kubernetes-platform cluster.
+config:
+  objectStoreEndpoint: http://rustfs.rustfs.svc:9000
+  qdrantHost: qdrant.agentic-platform.svc
+  redisHost: redis.agentic-platform.svc
+  kafkaBootstrapServers: kafka-kafka-bootstrap.messaging.svc:9092
+  temporalAddress: temporal-frontend.temporal.svc:7233
+  registryUrl: http://platform-agentic-platform-registry.agentic-platform.svc:8001
+networkPolicy:
+  enabled: true
+  infrastructureNamespace: agentic-platform
+  messagingNamespace: messaging

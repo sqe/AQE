@@ -1,0 +1,88 @@
+{{- $root := . -}}
+{{- $services := dict
+  "workflow-api" (dict "image" .Values.images.temporal "port" 8008 "command" (list "uvicorn" "temporal_worker.api:app" "--host" "0.0.0.0" "--port" "8008"))
+  "byoa" (dict "image" .Values.images.byoa "port" 8009 "command" (list "uvicorn" "byoa_adapter.app:app" "--host" "0.0.0.0" "--port" "8009"))
+-}}
+{{- range $name, $service := $services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aqe-{{ $name }}
+  labels:
+    {{- include "aqe.componentLabels" (dict "root" $root "component" $name) | nindent 4 }}
+spec:
+  replicas: {{ $root.Values.replicaCount }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: aqe-{{ $name }}}
+  template:
+    metadata:
+      labels:
+        {{- include "aqe.componentLabels" (dict "root" $root "component" $name) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: {{ $name }}
+          image: {{ $service.image | quote }}
+          command: {{ toJson $service.command }}
+          ports: [{name: http, containerPort: {{ $service.port }} }]
+          env:
+            - {name: TEMPORAL_ADDRESS, value: {{ $root.Values.config.temporalAddress | quote }}}
+            - {name: REGISTRY_URL, value: {{ $root.Values.config.registryUrl | quote }}}
+            - {name: AGENT_ENDPOINT, value: {{ $root.Values.config.agentEndpoint | quote }}}
+            - {name: AQE_WORKFLOW_URL, value: "http://aqe-workflow-api:8008/v1/qe-runs"}
+            - {name: TEST_EXECUTION_URL, value: "http://aqe-test-execution:8003/run_tests"}
+            {{- include "aqe.env" $root | nindent 12 }}
+          envFrom:
+            - secretRef: {name: {{ $root.Values.secretName }}, optional: false}
+          readinessProbe: {httpGet: {path: /health, port: http}, initialDelaySeconds: 5}
+          resources: {{ toYaml $root.Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {sizeLimit: 256Mi}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aqe-{{ $name }}
+spec:
+  selector: {app.kubernetes.io/name: aqe-{{ $name }} }
+  ports: [{name: http, port: {{ $service.port }}, targetPort: http}]
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aqe-temporal-worker
+  labels:
+    {{- include "aqe.componentLabels" (dict "root" . "component" "temporal-worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: aqe-temporal-worker}
+  template:
+    metadata:
+      labels:
+        {{- include "aqe.componentLabels" (dict "root" . "component" "temporal-worker") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: worker
+          image: {{ .Values.images.temporal | quote }}
+          command: [python, -m, temporal_worker.worker]
+          env:
+            - {name: TEMPORAL_ADDRESS, value: {{ .Values.config.temporalAddress | quote }}}
+            - {name: TEST_GENERATION_URL, value: "http://aqe-test-generation:8001/generate_test_plan"}
+            - {name: AGENT_TEST_EXECUTION_URL, value: "http://aqe-test-execution:8003/run_tests"}
+            - {name: WEBSITE_TEST_EXECUTION_URL, value: "http://aqe-website-execution:8013/run_tests"}
+            - {name: SOURCE_ANALYSIS_URL, value: "http://aqe-github-analysis:8010/v1/analyze"}
+          resources: {{ toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true

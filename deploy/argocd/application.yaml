@@ -1,0 +1,62 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aqe
+  namespace: argocd
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+    argocd-image-updater.argoproj.io/image-list: >-
+      artifact-management=ghcr.io/sqe/aqe-artifact-management:main,
+      change-detection=ghcr.io/sqe/aqe-change-detection:main,
+      diagnostics=ghcr.io/sqe/aqe-diagnostics:main,
+      github-analysis=ghcr.io/sqe/aqe-github-analysis:main,
+      github-commit=ghcr.io/sqe/aqe-github-commit:main,
+      knowledge-ingestion=ghcr.io/sqe/aqe-knowledge-ingestion:main,
+      test-generation=ghcr.io/sqe/aqe-test-generation:main,
+      test-execution=ghcr.io/sqe/aqe-test-execution:main,
+      webpage-state-capture=ghcr.io/sqe/aqe-webpage-state-capture:main,
+      website-execution=ghcr.io/sqe/aqe-website-execution:main,
+      temporal=ghcr.io/sqe/aqe-temporal:main,
+      byoa=ghcr.io/sqe/aqe-byoa:main,
+      reporting=ghcr.io/sqe/aqe-reporting:main,
+      frontend=ghcr.io/sqe/aqe-frontend:main
+    argocd-image-updater.argoproj.io/update-strategy: digest
+    argocd-image-updater.argoproj.io/write-back-method: git
+    argocd-image-updater.argoproj.io/artifact-management.helm.image-spec: agents.artifact-management.image
+    argocd-image-updater.argoproj.io/change-detection.helm.image-spec: agents.change-detection.image
+    argocd-image-updater.argoproj.io/diagnostics.helm.image-spec: agents.diagnostics.image
+    argocd-image-updater.argoproj.io/github-analysis.helm.image-spec: agents.github-analysis.image
+    argocd-image-updater.argoproj.io/github-commit.helm.image-spec: agents.github-commit.image
+    argocd-image-updater.argoproj.io/knowledge-ingestion.helm.image-spec: agents.knowledge-ingestion.image
+    argocd-image-updater.argoproj.io/test-generation.helm.image-spec: agents.test-generation.image
+    argocd-image-updater.argoproj.io/test-execution.helm.image-spec: agents.test-execution.image
+    argocd-image-updater.argoproj.io/webpage-state-capture.helm.image-spec: agents.webpage-state-capture.image
+    argocd-image-updater.argoproj.io/website-execution.helm.image-spec: agents.website-execution.image
+    argocd-image-updater.argoproj.io/temporal.helm.image-spec: images.temporal
+    argocd-image-updater.argoproj.io/byoa.helm.image-spec: images.byoa
+    argocd-image-updater.argoproj.io/reporting.helm.image-spec: images.reporting
+    argocd-image-updater.argoproj.io/frontend.helm.image-spec: images.frontend
+spec:
+  project: aqe
+  source:
+    repoURL: https://github.com/sqe/AQE.git
+    targetRevision: main
+    path: deploy/helm/aqe
+    helm:
+      releaseName: aqe
+      valueFiles: [values.yaml, values-agentic-platform.yaml]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: aqe
+  syncPolicy:
+    automated: {prune: true, selfHeal: true, allowEmpty: false}
+    retry:
+      limit: 5
+      backoff: {duration: 10s, factor: 2, maxDuration: 3m}
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  revisionHistoryLimit: 10

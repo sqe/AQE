@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aqe-reporting
+  labels:
+    {{- include "aqe.componentLabels" (dict "root" . "component" "reporting") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: aqe-reporting}
+  template:
+    metadata:
+      labels:
+        {{- include "aqe.componentLabels" (dict "root" . "component" "reporting") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: reporting
+          image: {{ .Values.images.reporting | quote }}
+          env:
+            - {name: KAFKA_BROKER, value: {{ .Values.config.kafkaBootstrapServers | quote }}}
+          envFrom:
+            - secretRef: {name: {{ .Values.secretName }}, optional: false}
+          resources: {{ toYaml .Values.resources | nindent 12 }}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}, readOnlyRootFilesystem: true}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aqe-frontend
+  labels:
+    {{- include "aqe.componentLabels" (dict "root" . "component" "frontend") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: aqe-frontend}
+  template:
+    metadata:
+      labels:
+        {{- include "aqe.componentLabels" (dict "root" . "component" "frontend") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: frontend
+          image: {{ .Values.images.frontend | quote }}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /, port: http}, initialDelaySeconds: 3}
+          resources: {{ toYaml .Values.resources | nindent 12 }}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}, readOnlyRootFilesystem: true}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aqe-frontend
+spec:
+  selector: {app.kubernetes.io/name: aqe-frontend}
+  ports: [{name: http, port: 80, targetPort: http}]

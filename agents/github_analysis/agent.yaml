@@ -1,0 +1,9 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: github-analysis}
+spec:
+  module: agents.github_analysis.app
+  port: 8010
+  cardPath: /.well-known/agent.json
+  skills: [source.inspect]
+  dependencies: [github]

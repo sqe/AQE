@@ -1,220 +1,259 @@
-# AQE - Agentic Quality Engineering Platform
+# AQE — Agentic Quality Engineering
 
-AQE is a comprehensive, AI-powered Quality Engineering platform that automates end-to-end testing workflows using agentic architecture and RAG (Retrieval-Augmented Generation) capabilities.
+AQE is a **compound agent system** that turns product context and observed UI
+state into generated tests, executes them in a bounded sandbox, diagnoses
+failures, and optionally repairs and re-runs the tests. The public role is the
+**QE orchestrator**; “umbrella agent” and “thick agent” are understandable but
+are not standard architecture terms.
 
-## Architecture Overview
+See [Architecture and operating rules](docs/architecture.md) for the complete
+Temporal rules, Mermaid flow diagrams, deployment procedures, BYOA protocol,
+and internal/external agent examples.
 
-AQE provides a complete end-to-end testing automation pipeline that combines:
-- Web state capture and change detection
-- AI-powered test generation using RAG
-- Automated test execution with persistence
-- Real-time monitoring and reporting
+## Architecture
 
-### Core Components
-
-1. **Agent Architecture** - A distributed system of specialized agents that handle different aspects of the QA workflow
-2. **Infrastructure Services** - PostgreSQL, MinIO, Qdrant, Redis, Kafka for data persistence and messaging
-3. **Web Frontend** - Interactive dashboard for orchestrating the QA workflow
-
-## Project Structure
-
-```
-.
-├── agents/                     # Specialized AI agents
-│   ├── change_detection_agent.py      # Detects UI changes using LLM analysis
-│   ├── test_generation_agent_multi_llm.py  # Generates Playwright tests using RAG
-│   ├── webpage_state_capture_agent.py     # Captures web page state for comparison
-│   ├── test_execution_agent.py       # Executes generated tests in a sandboxed environment
-│   ├── llm_fine_tuning_agent.py      # Manages RAG knowledge base ingestion
-│   └── artifact_management_agent.py  # Manages artifact versioning in MinIO and PostgreSQL
-├── frontend/                   # Web UI for orchestrating workflows
-│   ├── app.jsx                # Main React application
-│   └── index.html             # HTML entry point
-├── test_execution_agent/      # Test execution environment with Docker support
-│   ├── Dockerfile             # Custom Dockerfile for test execution
-│   ├── test_execution_agent.py # Execution agent logic
-│   └── requirements.txt       # Dependencies for execution agent
-├── service/                   # Background services
-│   └── reporing_service.py    # Kafka consumer for test result reporting
-├── utils/                     # Utility scripts and configurations
-│   └── db_setup/              # Database schema initialization
-│       └── artifact_metadata.sql  # PostgreSQL table definitions
-├── docker-compose.yml         # Multi-service orchestration
-├── Dockerfile.agent           # Base Dockerfile for agent services  
-├── Dockerfile.base            # Multi-stage build for agents
-├── Dockerfile.frontend        # Frontend Docker configuration
-├── Dockerfile.reporting       # Reporting service Dockerfile
-├── Dockerfile.worker          # Kafka consumer worker Dockerfile
-├── requirements.in            # Main project dependencies
-├── requirements.txt           # Generated dependency list
-├── test/                      # Test suite for the platform
-│   ├── Dockerfile             # Test environment configuration  
-│   ├── requirements.txt       # Test dependencies
-│   └── run_tests.sh           # Test execution script
-├── .env                       # Environment configuration file
-└── README.md                  # This documentation file
+```text
+Client / agentic-kubernetes-platform supervisor
+                    │ JSON-RPC over Kafka
+                    ▼
+            AQE BYOA adapter
+                    │
+                    ▼
+             Temporal workflow
+       ┌────────────┴────────────┐
+       ▼                         ▼
+Test generation             Test execution
+RAG + model                  quality gate
+       │                     sandbox + pytest
+       │                         │
+       │                    failure diagnosis
+       │                         │
+       └──────────────────► bounded repair loop
+                                 │
+                                 ▼
+                    PostgreSQL + RustFS evidence
 ```
 
-## Services Architecture
+### Ownership boundaries
 
-### Infrastructure Services (via docker-compose.yml)
+| Layer | Responsibility |
+|---|---|
+| BYOA adapter | Platform Agent Card, registry refresh, `tasks.aqe` / `results.aqe`, result-before-offset-commit |
+| Temporal | Durable generate → execute → repair coordination |
+| Generation agent | Product RAG + agent-ontology-grounded pytest source and immutable test artifact |
+| Agent executor | Browser-free HTTP/Agent Card/A2A tests in an isolated bounded runtime |
+| Website executor | Playwright Chromium journeys in a separate browser runtime |
+| Repair client | At most `MAX_REPAIR_ATTEMPTS`; preserve expected behavior and never weaken assertions |
+| Diagnostics agent | Fleet Agent Card checks, skill contract probes, safe retries, and recovery recommendations |
+| PostgreSQL / RustFS | Test-run state, source, repaired artifacts, output, and audit evidence |
 
-1. **PostgreSQL** - Primary database for test run metadata and artifact tracking
-2. **MinIO** - Object storage for test artifacts and snapshots  
-3. **Qdrant** - Vector database for RAG knowledge base storage
-4. **Redis** - Caching and session management
-5. **Kafka** - Message broker for asynchronous communication between agents
-6. **Zookeeper** - Kafka coordination service
+Generated code is never silently changed before its first run. The old executor
+rewrote URLs, expected strings, and locator strictness, which could manufacture
+false passes; that behavior has been removed.
 
-### Agent Services
+## Test quality policy
 
-1. **Artifact Management Agent** (`8007`) - Manages artifact versioning in PostgreSQL and MinIO
-2. **Change Detection Agent** (`8000`) - Analyzes web page changes using LLMs
-3. **Test Generation Agent** (`8001`) - Generates Playwright Python tests using RAG
-4. **Webpage State Capture Agent** (`8002`) - Captures and compares web page states
-5. **Test Execution Agent** (`8003`) - Executes generated tests in a sandboxed environment
-6. **LLM Fine Tuning Agent** (`8004`) - Manages RAG knowledge base ingestion and versioning
-7. **Test Reporting Service** (`8005`) - Consumes Kafka events and updates reporting database
+Every generated test must:
 
-### Frontend Service
+- verify one observable outcome with one assertion or Playwright `expect`;
+- use fixtures for shared setup and cleanup;
+- use role/label/test-id locators and explicit state waits;
+- remain independent of execution order;
+- preserve expected values during repair;
+- avoid fixed sleeps, swallowed failures, and conditional assertion skipping.
 
-- **AQE Frontend** (`3000`) - Interactive dashboard for orchestrating QA workflows
+The AST quality gate enforces the atomic-outcome rules before execution. Pytest
+exit status and JUnit XML—not output-string matching—determine the result.
 
-## Key Features
+When `TEST_CATALOG_REPOSITORY` and `TEST_CATALOG_GITHUB_TOKEN` are configured,
+execution commits immutable Python tests and metadata to
+`generated-tests/<test-type>/<agent>/<version>/` on `TEST_CATALOG_BRANCH`. This lets CI test
+specific versions of teaching, listening, finance, insurance, or any other
+agent without encoding profession-specific behavior into AQE. Keep the catalog
+repository private when scenarios or expected outcomes contain sensitive data.
+When the catalog is this repository, `.github/workflows/generated-tests.yml`
+runs the generated branch automatically with read-only GitHub permissions.
 
-### 1. RAG-Based Test Generation
-- Integrates with Qdrant vector database for semantic search of product knowledge
-- Uses LLMs (Gemini or self-hosted) to generate Playwright tests based on product specifications
-- Maintains knowledge base versioning for reproducible test generation
+Confirmed product defects are also durable GitHub artifacts, but ordinary test
+failures are not. After triage, `POST /v1/findings/<task-id>/confirm` reruns the
+test without repair and requires non-empty evidence. Only assertion failures
+with zero execution/collection errors are published to
+`generated-findings/<test-type>/<agent>/<version>/`. CI verifies each finding
+continues to reproduce; a newly passing reproducer signals that the defect was
+fixed and the catalog should be updated.
 
-### 2. Change Detection & Analysis
-- Captures web page states before and after changes
-- Uses LLMs to analyze differences and generate targeted test plans
-- Supports both manual and automated change detection workflows
+## Local development
 
-### 3. End-to-End Test Automation
-- Generates executable Playwright Python test code
-- Executes tests in isolated environments
-- Provides detailed execution results and logs
-
-### 4. Artifact Management & Versioning
-- Manages versioned artifacts in MinIO object storage
-- Tracks artifact versions in PostgreSQL database
-- Supports persistence of test code and execution results
-
-### 5. Real-time Monitoring & Reporting
-- Web dashboard for monitoring agent health and workflow status
-- Kafka-based event system for real-time updates
-- Comprehensive test result reporting
-
-## Getting Started
-
-### Prerequisites
-
-- Docker and Docker Compose installed
-- At least 4GB of available RAM (recommended 8GB+)
-- Node.js and npm for frontend development (optional)
-
-### Quick Start
-
-1. **Clone the repository:**
 ```bash
-git clone https://github.com/sqe/AQE.git
-cd AQE
+docker compose up --build
 ```
 
-2. **Start all services:**
+Endpoints:
+
+- dashboard: <http://localhost:3000>
+- execution: <http://localhost:8003/health>
+- website execution: <http://localhost:8013/health>
+- durable workflow API: <http://localhost:8008/docs>
+- BYOA discovery: <http://localhost:8009/.well-known/agent.json>
+- diagnostics and external agent probes: <http://localhost:8006/docs>
+- Temporal UI: <http://localhost:8233>
+
+Start a durable run:
+
 ```bash
-docker-compose up --build
+curl -s http://localhost:8008/v1/qe-runs \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://example.com","test_type":"website","spec":"Verify the primary user flow","repair":true}'
 ```
 
-3. **Access the dashboard:**
-Open your browser to `http://localhost:3000`
+To ground agent testing in its implementation, configure a read-only fine-grained
+GitHub token and an explicit repository allowlist, then include a commit, tag,
+or version ref in the run:
 
-### Development
+```bash
+export GITHUB_SOURCE_ALLOWED_REPOSITORIES=sqe/example-agent
+export GITHUB_SOURCE_TOKEN=github_pat_read_only
+curl -s http://localhost:8008/v1/qe-runs \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://agent.example/rpc","test_type":"agent","source_repository":"sqe/example-agent","source_ref":"a1b2c3d","spec":"Validate declared skills"}'
+```
 
-For development, you can:
-- Modify individual agents in `agents/` directory
-- Update the frontend in `frontend/app.jsx`
-- Customize database schema in `utils/db_setup/`
+The source-analysis agent reads at most 30 allowlisted source files and 500 KB,
+records blob/tree SHAs, and emits candidate line-level findings. The generation
+model uses those candidates to design black-box reproductions. They do not
+become confirmed defects until execution and the explicit finding gate pass.
 
-### Configuration
+Configure repair with an OpenAI-compatible chat-completions endpoint:
 
-Environment variables are managed through:
-- `.env` file for local development
-- Docker Compose configuration for service-specific settings
+```bash
+export REPAIR_LLM_URL=http://host.docker.internal:8081/v1/chat/completions
+export REPAIR_LLM_MODEL=your-model
+```
 
-## API Endpoints
+## agentic-kubernetes-platform BYOA
 
-### Agent Endpoints
+Yes—AQE can be brought into the platform as one compound specialist. Do not
+expose every internal worker as a platform agent. Configure the adapter to use
+the platform registry and Kafka:
 
-1. **LLM Fine Tuning Agent** (`/ingest_knowledge`):
-   - POST: Ingests product specifications into Qdrant knowledge base
+```bash
+export PLATFORM_REGISTRY_URL=http://platform-agentic-platform-registry.agentic-platform.svc:8001
+export PLATFORM_KAFKA_BOOTSTRAP_SERVERS=kafka-kafka-bootstrap.messaging.svc:9092
+```
 
-2. **Webpage State Capture Agent** (`/capture`):
-   - POST: Captures web page state for change detection
+Published skills are:
 
-3. **Change Detection Agent** (`/detect_changes`):
-   - POST: Analyzes differences between captured states
+- `qe.run`: start the durable end-to-end workflow;
+- `qe.validate`: run a persisted test without repair;
+- `qe.repair`: diagnose, repair, and re-run a persisted test.
 
-4. **Test Generation Agent** (`/generate_test_plan`):
-   - POST: Generates Playwright test plans using RAG
+The adapter accepts native platform JSON-RPC and Model Fleet's `tasks.execute`
+envelope, publishes correlated results, and commits Kafka input only after the
+result is published.
 
-5. **Test Execution Agent** (`/run_tests`):
-   - POST: Executes generated tests from MinIO
+## Agentic QE automata and agent contract testing
 
-### Health Endpoints
+“Agentic QE automaton” is a useful product name for AQE: the standard technical
+description remains a **compound agent system** with a durable workflow/state
+machine. The diagnostics agent validates all internal Agent Cards after every
+Argo CD sync and supports contract probes for known agents on internal or
+external networks:
 
-- `GET /agent_card` - Health check for each agent
-- `GET /health` - General service health status
+```bash
+curl -s http://localhost:8006/v1/agent-probes \
+  -H 'content-type: application/json' \
+  -d '{"card_url":"https://agent.example/.well-known/agent.json","expected_skills":["research.run"]}'
+```
 
-## Architecture Details
+External hosts must be explicitly added to `AGENT_PROBE_ALLOWED_HOSTS` (or the
+Helm `config.agentProbeAllowedHosts` value). An optional `invocation` object can
+exercise a JSON-RPC scenario after its Agent Card and skills pass. “Safe heal”
+retries transient checks and returns remediation guidance; it intentionally
+does not restart workloads or mutate clusters without a separate authorized
+platform operation.
 
-### Data Flow
+## Continuous evaluation
 
-1. **Knowledge Ingestion**: Product specifications are ingested into Qdrant
-2. **State Capture**: Web page states are captured before and after changes  
-3. **Change Detection**: LLM analyzes differences between states
-4. **Test Generation**: Playwright Python tests are generated using RAG
-5. **Test Execution**: Generated tests execute in isolated environment
-6. **Reporting**: Results are persisted and reported through Kafka
+Golden generation and repair cases live in `evaluation/golden/*.jsonl`.
+Positive and adversarial negative examples check atomic tests, stable waiting,
+and preservation of expected values.
 
-### Persistence Strategy
+```bash
+python evaluation/run.py --minimum-score 1.0
+EVAL_MODEL_URL=https://model.example/v1/chat/completions \
+  EVAL_MODEL_NAME=my-model python evaluation/run.py --live --minimum-score 0.8
+```
 
-- **PostgreSQL**: Stores test run metadata, status tracking, and reporting data
-- **MinIO**: Stores actual test artifacts (code files) and snapshots
-- **Qdrant**: Stores RAG knowledge base for semantic search
-- **Kafka**: Provides async messaging between agents
+CI validates the dataset on every change. A scheduled workflow evaluates a live
+model when `EVAL_MODEL_URL` and optional API-key secrets are configured.
 
-### Security Considerations
+## Agent ontology and live graph
 
-- All services run in isolated Docker containers
-- Test code execution happens in sandboxed environments  
-- Secure communication with environment-specific credentials
-- CORS policy applied to web frontend for development
+The versioned ontology at `ontology/agent_ontology.json` describes agent
+interfaces, autonomy, sensitivity, impact, archetypes, and risk overlays. The
+knowledge-ingestion agent stores it in Qdrant and RustFS without deleting
+product knowledge. The generator combines deterministic applicable ontology
+rules with retrieved product evidence, so teaching, listening, finance,
+insurance, healthcare, action, research, and orchestration agents receive
+different obligations without hard-coded test implementations.
 
-## Contributing
+The dashboard's live graph follows the neighboring platform knowledge-graph
+visualizer contract (`nodes`, `edges`, `stats`). It displays AQE agents,
+infrastructure, discovered internal/external targets, versions, skills, and
+ontology classes. Every generation emits a test node and animated routing edges
+to the correct HTTP or browser executor.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Make your changes
-4. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-5. Push to the branch (`git push origin feature/AmazingFeature`)
-6. Open a Pull Request
+## CI/CD and Argo CD
 
-## License
+- `.github/workflows/ci.yml`: compile, unit tests, golden evaluation, Compose
+  validation, both Helm profiles, every independently owned image, and an execution E2E
+  test with real PostgreSQL and RustFS persistence.
+- `.github/workflows/release.yml`: builds and publishes versioned GHCR images and
+  packages the Helm chart; published images include provenance and SBOM
+  attestations.
+- `deploy/argocd/project.yaml` and `application.yaml`: scoped source/destination,
+  automated prune/self-heal, retry policy, server-side apply, and independent
+  Argo CD Image Updater digest tracking for every agent.
+- `deploy/helm/aqe/templates/preflight.yaml`: a PreSync diagnostic hook that
+  blocks rollout when PostgreSQL, RustFS, Kafka, Temporal, or the configured model
+  endpoint is unavailable, plus a PostSync check for every AQE Agent Card.
 
-MIT License
+Every deployable agent owns `agents/<agent>/{app.py,Dockerfile,requirements.txt,agent.yaml}`.
+The two execution agents are distinct image and policy boundaries: HTTP/A2A
+tests do not carry a browser, while website tests use the official Playwright
+runtime. Install the Argo CD project and application after providing
+`aqe-runtime-secrets` through your secret-management system:
 
-Copyright (c) 2025 Aziz Kurbanov
+```bash
+kubectl apply -f deploy/argocd/project.yaml -f deploy/argocd/application.yaml
+```
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+The application selects `values-agentic-platform.yaml`, which uses the
+neighboring platform's `agentic-platform`, `messaging`, `temporal`, and `rustfs`
+service DNS names. Local rendering does not mutate that cluster.
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+`aqe-runtime-secrets` must be created by the cluster's secret manager. At
+minimum it supplies `POSTGRES_URL`, RustFS-compatible `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`, and `QDRANT_API_KEY`. Add scoped `GITHUB_PAT`,
+`GITHUB_SOURCE_TOKEN`, or `TEST_CATALOG_GITHUB_TOKEN` only when those GitHub
+capabilities are enabled; none belong in Helm values.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+Never commit model keys, database passwords, or registry credentials. The chart
+references an optional Secret and keeps credentials out of the repository.
 
+## Verification
 
-## Support
+```bash
+python -m pytest -q test/test_quality.py test/test_byoa_adapter.py test/test_evaluation.py
+python evaluation/run.py --minimum-score 1.0
+helm lint deploy/helm/aqe
+helm template aqe deploy/helm/aqe >/dev/null
+docker compose config --quiet
+test/e2e/run.sh
+```
 
-For support, please create an issue in the GitHub repository.
+For production, run generated tests in one disposable Kubernetes Job per attempt
+with a read-only root filesystem, seccomp, no service-account token, strict
+resource quotas, and an egress policy limited to the system under test. The
+current Compose subprocess sandbox is bounded and secret-scrubbed, but a
+container is the local security boundary—not the Python subprocess alone.

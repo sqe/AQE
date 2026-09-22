@@ -1,0 +1,6 @@
+a2a-sdk[http-server]==0.3.7
+asyncpg==0.30.0
+boto3==1.40.40
+prometheus-client==0.22.1
+qdrant-client==1.15.1
+uvicorn==0.37.0

@@ -1,0 +1,9 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: test-generation}
+spec:
+  module: agents.test_generation.app
+  port: 8001
+  cardPath: /agent_card
+  skills: [generate_tests]
+  dependencies: [postgresql, qdrant, rustfs, diagnostics]

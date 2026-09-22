@@ -1,0 +1,5 @@
+a2a-sdk[http-server]==0.3.7
+playwright==1.55.0
+prometheus-client==0.22.1
+redis==6.4.0
+uvicorn==0.37.0

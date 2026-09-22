@@ -1,11 +1,3 @@
-version: '3.8'
-
-# Defines the shared base image build process for Python dependencies
-x-base-build: &base-build
-  context: .
-  dockerfile: Dockerfile.base
-  target: production
-
 services:
   # --- Infrastructure Services ---
 
@@ -29,24 +21,36 @@ services:
       timeout: 5s
       retries: 5
 
-  minio:
-    image: minio/minio
-    container_name: minio
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: rustfs
     environment:
-      MINIO_ROOT_USER: minioadmin
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
       MINIO_ROOT_PASSWORD: minioadmin
-      MINIO_BUCKET: agentic-qe-artifacts # Pre-create the bucket
-    command: server /data --console-address ":9001"
+    command: /data
     volumes:
-      - minio_data:/data
+      - rustfs_data:/data
     ports:
       - "9000:9000" # API port
       - "9001:9001" # Console port
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+
+  rustfs_init:
+    image: amazon/aws-cli:2.31.23
+    depends_on:
+      rustfs: {condition: service_started}
+    environment:
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until aws --endpoint-url http://rustfs:9000 s3api list-buckets >/dev/null 2>&1; do sleep 2; done
+        aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket agentic-qe-artifacts >/dev/null 2>&1 ||
+        aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket agentic-qe-artifacts
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -115,121 +119,260 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
     restart: always
     
-  # --- Application Agents (Using Dockerfile.agent - includes Playwright) ---
+  # --- Application Agents (browser-free unless explicitly identified) ---
   
-  # NEW: 0. Artifact Management Agent (Handles PostgreSQL schema and MinIO versioning)
+  # 0. Artifact Management Agent (PostgreSQL metadata and RustFS objects)
   artifact_management_agent:
     build:
-      <<: *base-build
-      dockerfile: Dockerfile.agent
+      context: .
+      dockerfile: agents/artifact_management/Dockerfile
     container_name: artifact_management_agent
     environment:
       AGENT_PORT: 8007
-      AGENT_MODULE: agents.artifact_management_agent
       POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
-      MINIO_ENDPOINT: minio:9000
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
       REDIS_HOST: redis
-    command: /app/run_agent.sh agents.artifact_management_agent AGENT_PORT
     ports:
       - "8007:8007"
-    depends_on: [postgres, minio, redis]
+    depends_on: [postgres, rustfs_init, redis]
 
   # 1. Orchestrator
   change_detection_agent:
     build:
-      <<: *base-build
-      dockerfile: Dockerfile.agent
+      context: .
+      dockerfile: agents/change_detection/Dockerfile
     container_name: change_detection_agent
     environment:
       AGENT_PORT: 8000
-      AGENT_MODULE: agents.change_detection_agent
       POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
-      MINIO_ENDPOINT: minio:9000
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
       QDRANT_HOST: qdrant
       KAFKA_BROKER: kafka:9092
       REDIS_HOST: redis # Added Redis host
-    command: /app/run_agent.sh agents.change_detection_agent AGENT_PORT
     ports:
       - "8000:8000"
-    depends_on: [postgres, minio, qdrant, kafka, redis, artifact_management_agent] # Added artifact_management_agent dependency
+    depends_on: [postgres, rustfs_init, qdrant, kafka, redis, artifact_management_agent]
 
   # 2. Test Generation Agent
   test_generation_agent:
     build:
-      <<: *base-build
-      dockerfile: Dockerfile.agent
+      context: .
+      dockerfile: agents/test_generation/Dockerfile
     container_name: test_generation_agent_multi_llm
     environment:
       AGENT_PORT: 8001
-      AGENT_MODULE: agents.test_generation_agent_multi_llm
       POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
-      MINIO_ENDPOINT: minio:9000
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
       QDRANT_HOST: qdrant
       KAFKA_BROKER: kafka:9092
       REDIS_HOST: redis # Added Redis host
-    command: /app/run_agent.sh agents.test_generation_agent_multi_llm AGENT_PORT
+      TEST_CATALOG_REPOSITORY: ${TEST_CATALOG_REPOSITORY:-}
+      TEST_CATALOG_BRANCH: ${TEST_CATALOG_BRANCH:-aqe-generated-tests}
+      TEST_CATALOG_GITHUB_TOKEN: ${TEST_CATALOG_GITHUB_TOKEN:-}
+      GRAPH_API_URL: http://diagnostics_agent:8006/v1/graph/events
     ports:
       - "8001:8001"
-    depends_on: [postgres, minio, qdrant, kafka, redis, artifact_management_agent] # Added artifact_management_agent dependency
+    depends_on: [postgres, rustfs_init, qdrant, kafka, redis, artifact_management_agent]
+
+  github_analysis_agent:
+    build:
+      context: .
+      dockerfile: agents/github_analysis/Dockerfile
+    container_name: github_analysis_agent
+    environment:
+      AGENT_PORT: 8010
+      GITHUB_SOURCE_ALLOWED_REPOSITORIES: ${GITHUB_SOURCE_ALLOWED_REPOSITORIES:-}
+      GITHUB_SOURCE_TOKEN: ${GITHUB_SOURCE_TOKEN:-}
+    ports:
+      - "8010:8010"
+
+  github_commit_agent:
+    build:
+      context: .
+      dockerfile: agents/github_commit/Dockerfile
+    environment:
+      AGENT_PORT: 8011
+      KAFKA_BROKER: kafka:9092
+      GITHUB_PAT: ${GITHUB_PAT:-}
+    ports:
+      - "8011:8011"
+    depends_on: [kafka]
   
   # 3. Webpage State Capture Agent (New)
   webpage_state_capture_agent:
     build:
-      <<: *base-build
-      dockerfile: Dockerfile.agent
+      context: .
+      dockerfile: agents/webpage_state_capture/Dockerfile
     container_name: webpage_state_capture_agent
     environment:
       AGENT_PORT: 8002
-      AGENT_MODULE: agents.webpage_state_capture_agent
       POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
-      MINIO_ENDPOINT: minio:9000
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
       REDIS_HOST: redis # Added Redis host
-    command: /app/run_agent.sh agents.webpage_state_capture_agent AGENT_PORT
     ports:
       - "8002:8002"
-    depends_on: [postgres, minio, redis, artifact_management_agent] # Added artifact_management_agent dependency
+    depends_on: [postgres, rustfs_init, redis, artifact_management_agent]
 
   # 4. Test Execution Agent (New)
   test_execution_agent:
     # --- CRITICAL FIX: Point to the specialized build context ---
     build:
       context: .
-      dockerfile: ./test_execution_agent/Dockerfile
+      dockerfile: agents/test_execution/Dockerfile
     container_name: test_execution_agent
     environment:
       AGENT_PORT: 8003
-      AGENT_MODULE: agents.test_execution_agent
       KAFKA_BROKER: kafka:9092
-      # CRITICAL: Add DB/MinIO config so the agent can fetch the test code
       POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
-      MINIO_ENDPOINT: minio:9000
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      EXECUTION_TIMEOUT_SECONDS: 180
+      TEST_EXECUTION_MODE: agent
+      MAX_REPAIR_ATTEMPTS: 2
+      REPAIR_LLM_URL: ${REPAIR_LLM_URL:-}
+      REPAIR_LLM_MODEL: ${REPAIR_LLM_MODEL:-}
+      REPAIR_LLM_API_KEY: ${REPAIR_LLM_API_KEY:-}
+      TEST_CATALOG_REPOSITORY: ${TEST_CATALOG_REPOSITORY:-}
+      TEST_CATALOG_BRANCH: ${TEST_CATALOG_BRANCH:-aqe-generated-tests}
+      TEST_CATALOG_GITHUB_TOKEN: ${TEST_CATALOG_GITHUB_TOKEN:-}
     # Command change: Running the agent file directly from the new image
-    command: python test_execution_agent.py 
     ports:
       - "8003:8003"
-    # CRITICAL: Add dependencies to Postgres and MinIO
-    depends_on: [kafka, postgres, minio]
+    depends_on:
+      kafka: {condition: service_started}
+      postgres: {condition: service_started}
+      rustfs_init: {condition: service_completed_successfully}
     # --- END CRITICAL FIX ---
+
+  website_test_execution_agent:
+    build:
+      context: .
+      dockerfile: agents/website_execution/Dockerfile
+    container_name: website_test_execution_agent
+    environment:
+      AGENT_PORT: 8013
+      TEST_EXECUTION_MODE: website
+      POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      EXECUTION_TIMEOUT_SECONDS: 180
+      MAX_REPAIR_ATTEMPTS: 2
+    ports:
+      - "8013:8013"
+    depends_on:
+      kafka: {condition: service_started}
+      postgres: {condition: service_started}
+      rustfs_init: {condition: service_completed_successfully}
+
+  temporal:
+    image: temporalio/temporal:1.5.1
+    command: [server, start-dev, --ip, 0.0.0.0]
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    healthcheck:
+      test: [CMD, temporal, operator, cluster, health, --address, temporal:7233]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  temporal_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_TASK_QUEUE: aqe-workflows
+      AGENT_TEST_EXECUTION_URL: http://test_execution_agent:8003/run_tests
+      WEBSITE_TEST_EXECUTION_URL: http://website_test_execution_agent:8013/run_tests
+      SOURCE_ANALYSIS_URL: http://github_analysis_agent:8010/v1/analyze
+    depends_on:
+      temporal: {condition: service_healthy}
+      test_generation_agent: {condition: service_started}
+      test_execution_agent: {condition: service_started}
+      website_test_execution_agent: {condition: service_started}
+      github_analysis_agent: {condition: service_started}
+
+  workflow_api:
+    build:
+      context: .
+      dockerfile: Dockerfile.temporal
+    command: [uvicorn, temporal_worker.api:app, --host, 0.0.0.0, --port, "8008"]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_TASK_QUEUE: aqe-workflows
+    ports:
+      - "8008:8008"
+    depends_on:
+      temporal: {condition: service_healthy}
+    networks:
+      default:
+        aliases: [aqe-workflow-api]
+
+  aqe_byoa:
+    build:
+      context: .
+      dockerfile: Dockerfile.byoa
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: ${PLATFORM_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-}
+      AGENT_ENDPOINT: ${AQE_AGENT_ENDPOINT:-http://aqe_byoa:8009}
+    ports:
+      - "8009:8009"
+    depends_on:
+      - kafka
+      - workflow_api
+      - test_execution_agent
+
+  diagnostics_agent:
+    build:
+      context: .
+      dockerfile: agents/diagnostics/Dockerfile
+    environment:
+      AGENT_PROBE_ALLOWED_HOSTS: "artifact_management_agent,change_detection_agent,test_generation_agent,github_analysis_agent,github_commit_agent,webpage_state_capture_agent,test_execution_agent,website_test_execution_agent,llm_fine_tuning_agent,aqe_byoa,host.docker.internal"
+      DIAGNOSTICS_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8006:8006"
+    depends_on:
+      - artifact_management_agent
+      - change_detection_agent
+      - test_generation_agent
+      - github_analysis_agent
+      - github_commit_agent
+      - webpage_state_capture_agent
+      - test_execution_agent
+      - website_test_execution_agent
+      - llm_fine_tuning_agent
+      - aqe_byoa
+    networks:
+      default:
+        aliases: [aqe-diagnostics]
 
   # 5. Knowledge Ingestion Agent
   llm_fine_tuning_agent:
     build:
-      <<: *base-build
-      dockerfile: Dockerfile.agent
+      context: .
+      dockerfile: agents/knowledge_ingestion/Dockerfile
     container_name: llm_fine_tuning_agent
     environment:
       AGENT_PORT: 8004
-      AGENT_MODULE: agents.llm_fine_tuning_agent
       POSTGRES_URL: postgresql://user:pass@postgres:5432/qe_db
-      MINIO_ENDPOINT: minio:9000
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
       QDRANT_HOST: qdrant
       REDIS_HOST: redis # Added Redis host
-    command: /app/run_agent.sh agents.llm_fine_tuning_agent AGENT_PORT
     ports:
       - "8004:8004"
-    depends_on: [postgres, minio, qdrant, redis, artifact_management_agent] # Added artifact_management_agent dependency
+    depends_on: [postgres, rustfs_init, qdrant, redis, artifact_management_agent]
 
-  # --- Application Worker (Using Dockerfile.worker - Kafka Consumer) ---
+  # --- Reporting Kafka consumer ---
   test_reporting_service:
     build:
       context: .  
@@ -249,23 +392,17 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: qellm-frontend
     ports:
-      - "3000:80" 
+      - "3000:8080"
     volumes:
       # This is critical for development: it ensures Nginx uses the latest version 
       # of your app.jsx file without rebuilding the container every time.
       - ./frontend:/usr/share/nginx/html/ 
     networks:
-      - qellm-net # Use the same network as your agents
-
-# ------------------------------------
-# 3. GLOBAL NETWORK DEFINITION 
-# ------------------------------------
-networks:
-  qellm-net:
-    driver: bridge # This creates the network for all services to use
+      default:
+        aliases: [aqe-frontend]
 
 volumes:
   postgres_data:
-  minio_data:
+  rustfs_data:
   qdrant_data:
   redis_data: # ADDED: Volume for persistent Redis data

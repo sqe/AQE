@@ -1,0 +1,9 @@
+services:
+  postgres:
+    ports: !reset []
+  rustfs:
+    ports: !reset []
+  zookeeper:
+    ports: !reset []
+  kafka:
+    ports: !reset []

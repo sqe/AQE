@@ -1,0 +1,9 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: webpage-state-capture}
+spec:
+  module: agents.webpage_state_capture.app
+  port: 8002
+  cardPath: /agent_card
+  skills: [capture_state]
+  dependencies: [redis, target-website]

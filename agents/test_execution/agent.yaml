@@ -1,0 +1,10 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: agent-test-execution}
+spec:
+  module: agents.test_execution.app
+  port: 8003
+  cardPath: /agent_card
+  skills: [qe.validate, qe.repair]
+  dependencies: [postgresql, rustfs, target-agent]
+  testType: agent

@@ -1,0 +1,9 @@
+apiVersion: aqe.sqe.io/v1alpha1
+kind: Agent
+metadata: {name: knowledge-ingestion}
+spec:
+  module: agents.knowledge_ingestion.app
+  port: 8004
+  cardPath: /agent_card
+  skills: [ingest_knowledge, ingest_ontology]
+  dependencies: [postgresql, qdrant, rustfs]

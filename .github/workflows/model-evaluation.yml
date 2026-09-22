@@ -1,0 +1,27 @@
+name: Live model evaluation
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch: {}
+
+permissions: {contents: read}
+
+jobs:
+  golden-set:
+    runs-on: ubuntu-latest
+    env:
+      EVAL_MODEL_URL: ${{ secrets.EVAL_MODEL_URL }}
+      EVAL_MODEL_API_KEY: ${{ secrets.EVAL_MODEL_API_KEY }}
+      EVAL_MODEL_NAME: ${{ vars.EVAL_MODEL_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install httpx
+      - name: Evaluate configured model
+        if: ${{ env.EVAL_MODEL_URL != '' }}
+        run: python evaluation/run.py --live --minimum-score 0.8
+      - name: Validate golden dataset when no model secret is configured
+        if: ${{ env.EVAL_MODEL_URL == '' }}
+        run: python evaluation/run.py --minimum-score 1.0

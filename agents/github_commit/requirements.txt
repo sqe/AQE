@@ -1,0 +1,5 @@
+a2a-sdk[http-server]==0.3.7
+aiokafka==0.12.0
+prometheus-client==0.22.1
+PyGithub==2.8.1
+uvicorn==0.37.0

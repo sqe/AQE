@@ -1,0 +1,94 @@
+name: Versioned agent E2E catalog
+
+on:
+  push:
+    branches: [aqe-generated-tests]
+    paths: [generated-tests/**, generated-findings/**]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generated-agent-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  agent-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: generated-agent-e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install pytest httpx
+      - name: Run versioned HTTP agent tests
+        env:
+          AGENT_BASE_URL: ${{ vars.AGENT_BASE_URL }}
+          AGENT_CARD_URL: ${{ vars.AGENT_CARD_URL }}
+          TARGET_AUTH_TYPE: ${{ vars.TARGET_AUTH_TYPE }}
+          TARGET_AUTH_TOKEN: ${{ secrets.TARGET_AUTH_TOKEN }}
+          TARGET_AUTH_USERNAME: ${{ secrets.TARGET_AUTH_USERNAME }}
+          TARGET_AUTH_PASSWORD: ${{ secrets.TARGET_AUTH_PASSWORD }}
+          TARGET_AUTH_API_KEY: ${{ secrets.TARGET_AUTH_API_KEY }}
+        run: test ! -d generated-tests/agent || pytest -q generated-tests/agent
+
+  website-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: generated-agent-e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install pytest pytest-playwright httpx
+      - run: playwright install --with-deps chromium
+      - name: Run versioned Playwright website tests
+        env:
+          TARGET_BASE_URL: ${{ vars.TARGET_BASE_URL }}
+          TARGET_AUTH_TYPE: ${{ vars.TARGET_AUTH_TYPE }}
+          TARGET_AUTH_LOGIN_URL: ${{ vars.TARGET_AUTH_LOGIN_URL }}
+          TARGET_AUTH_USERNAME_SELECTOR: ${{ vars.TARGET_AUTH_USERNAME_SELECTOR }}
+          TARGET_AUTH_PASSWORD_SELECTOR: ${{ vars.TARGET_AUTH_PASSWORD_SELECTOR }}
+          TARGET_AUTH_SUBMIT_SELECTOR: ${{ vars.TARGET_AUTH_SUBMIT_SELECTOR }}
+          TARGET_AUTH_USERNAME: ${{ secrets.TARGET_AUTH_USERNAME }}
+          TARGET_AUTH_PASSWORD: ${{ secrets.TARGET_AUTH_PASSWORD }}
+        run: test ! -d generated-tests/website || pytest -q generated-tests/website
+
+  confirmed-findings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: generated-agent-e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install pytest pytest-playwright httpx
+      - run: playwright install --with-deps chromium
+      - name: Verify confirmed issues still reproduce as assertion failures
+        env:
+          AGENT_BASE_URL: ${{ vars.AGENT_BASE_URL }}
+          AGENT_CARD_URL: ${{ vars.AGENT_CARD_URL }}
+          TARGET_BASE_URL: ${{ vars.TARGET_BASE_URL }}
+          TARGET_AUTH_TYPE: ${{ vars.TARGET_AUTH_TYPE }}
+          TARGET_AUTH_TOKEN: ${{ secrets.TARGET_AUTH_TOKEN }}
+          TARGET_AUTH_USERNAME: ${{ secrets.TARGET_AUTH_USERNAME }}
+          TARGET_AUTH_PASSWORD: ${{ secrets.TARGET_AUTH_PASSWORD }}
+          TARGET_AUTH_API_KEY: ${{ secrets.TARGET_AUTH_API_KEY }}
+        run: |
+          test ! -d generated-findings && exit 0
+          while IFS= read -r -d '' test_file; do
+            set +e
+            pytest -q "$test_file"
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
+              echo "Confirmed finding no longer reproduces: $test_file"
+              exit 1
+            fi
+            if [ "$status" -ne 1 ]; then
+              echo "Finding has an execution/collection error ($status): $test_file"
+              exit "$status"
+            fi
+          done < <(find generated-findings -name 'test_*.py' -print0)
