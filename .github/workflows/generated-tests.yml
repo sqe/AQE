@@ -24,8 +24,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        if: ${{ vars.E2E_RUNNER == '' }}
         with: {python-version: "3.12", cache: pip}
-      - run: pip install pytest httpx
+      - name: Use installed Python on the self-hosted runner
+        if: ${{ vars.E2E_RUNNER != '' }}
+        run: |
+          python_bin=$(command -v python3.12 || command -v python3)
+          "$python_bin" -m venv "$RUNNER_TEMP/aqe-catalog-python"
+          echo "$RUNNER_TEMP/aqe-catalog-python/bin" >> "$GITHUB_PATH"
+      - run: python -m pip install pytest httpx
       - name: Run versioned HTTP agent tests
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -44,10 +51,21 @@ jobs:
     environment: generated-agent-e2e
     steps:
       - uses: actions/checkout@v4
+      - id: inventory
+        run: echo "present=$([[ -d generated-tests/website ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
+        if: ${{ steps.inventory.outputs.present == 'true' && vars.E2E_RUNNER == '' }}
         with: {python-version: "3.12", cache: pip}
-      - run: pip install pytest pytest-playwright httpx
-      - run: playwright install --with-deps chromium
+      - name: Use installed Python on the self-hosted runner
+        if: ${{ steps.inventory.outputs.present == 'true' && vars.E2E_RUNNER != '' }}
+        run: |
+          python_bin=$(command -v python3.12 || command -v python3)
+          "$python_bin" -m venv "$RUNNER_TEMP/aqe-catalog-python"
+          echo "$RUNNER_TEMP/aqe-catalog-python/bin" >> "$GITHUB_PATH"
+      - if: ${{ steps.inventory.outputs.present == 'true' }}
+        run: python -m pip install pytest pytest-playwright httpx
+      - if: ${{ steps.inventory.outputs.present == 'true' }}
+        run: python -m playwright install --with-deps chromium
       - name: Run versioned Playwright website tests
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -67,10 +85,21 @@ jobs:
     environment: generated-agent-e2e
     steps:
       - uses: actions/checkout@v4
+      - id: inventory
+        run: echo "present=$([[ -d generated-findings ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
+        if: ${{ steps.inventory.outputs.present == 'true' && vars.E2E_RUNNER == '' }}
         with: {python-version: "3.12", cache: pip}
-      - run: pip install pytest pytest-playwright httpx
-      - run: playwright install --with-deps chromium
+      - name: Use installed Python on the self-hosted runner
+        if: ${{ steps.inventory.outputs.present == 'true' && vars.E2E_RUNNER != '' }}
+        run: |
+          python_bin=$(command -v python3.12 || command -v python3)
+          "$python_bin" -m venv "$RUNNER_TEMP/aqe-catalog-python"
+          echo "$RUNNER_TEMP/aqe-catalog-python/bin" >> "$GITHUB_PATH"
+      - if: ${{ steps.inventory.outputs.present == 'true' }}
+        run: python -m pip install pytest pytest-playwright httpx
+      - if: ${{ steps.inventory.outputs.present == 'true' }}
+        run: python -m playwright install --with-deps chromium
       - name: Verify confirmed issues still reproduce as assertion failures
         env:
           PYTHONPATH: ${{ github.workspace }}
