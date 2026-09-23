@@ -70,8 +70,8 @@ GRAPH_API_URL = os.environ.get("GRAPH_API_URL", "http://diagnostics_agent:8006/v
 GRAPH_EVENT_TIMEOUT_SECONDS = float(os.environ.get("GRAPH_EVENT_TIMEOUT_SECONDS", "3"))
 EMBEDDING_DIMENSION = 384 
 
-# Gemini API Constants 
-GEMINI_EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "text-embedding-004")
+# Gemini API Constants
+GEMINI_EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001").removeprefix("models/")
 GEMINI_GENERATION_MODEL = os.environ.get("GEMINI_GENERATION_MODEL", "gemini-2.5-flash")
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -458,7 +458,7 @@ class LLMServiceClient:
         if self.mode == 'GEMINI':
             url = f"{GEMINI_API_BASE_URL}/models/{GEMINI_EMBEDDING_MODEL}:embedContent"
             payload = {
-                "model": GEMINI_EMBEDDING_MODEL,
+                "model": f"models/{GEMINI_EMBEDDING_MODEL}",
                 "content": {"parts": [{"text": text}]},
                 "outputDimensionality": EMBEDDING_DIMENSION,
             }
