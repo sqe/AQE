@@ -4,6 +4,7 @@ WORKDIR /app
 COPY agents/test_generation/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY agents/test_generation /app/agents/test_generation
+COPY agents/test_execution/test_quality.py /app/agents/test_execution/test_quality.py
 COPY observability /app/observability
 COPY utils /app/utils
 COPY ontology /app/ontology
