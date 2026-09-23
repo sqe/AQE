@@ -38,8 +38,36 @@ def test_fleet_gate_rejects_requirements_needed_as_false_pass():
         verify.verify_fleet(payload)
 
 
+def test_contract_gate_rejects_partial_fleet_discovery():
+    with pytest.raises(SystemExit, match="executable=5/24"):
+        verify.verify_contracts(
+            {
+                "status": "completed",
+                "summary": {
+                    "discovered": 15,
+                    "testable_scenarios": 24,
+                    "executable_scenarios": 5,
+                    "missing_execution_contracts": 19,
+                    "missing_oracles": 19,
+                },
+            }
+        )
+
+
 def test_connected_model_and_fully_passing_fleet_are_promotable():
     verify.verify_model({"llm_provider": {"configured": True, "status": "connected"}})
+    verify.verify_contracts(
+        {
+            "status": "completed",
+            "summary": {
+                "discovered": 15,
+                "testable_scenarios": 24,
+                "executable_scenarios": 24,
+                "missing_execution_contracts": 0,
+                "missing_oracles": 0,
+            },
+        }
+    )
     verify.verify_fleet(
         {
             "status": "COMPLETED",

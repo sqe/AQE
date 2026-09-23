@@ -13,9 +13,11 @@ flowchart LR
     D --> E[Full integration gate]
     E --> F[Protected main]
     F --> G[Immutable SHA candidate]
-    G --> H[Development environment]
-    F --> I[SemVer tag]
-    I --> J[GA artifacts + production promotion]
+    G --> H[Candidate environment]
+    H --> I[Complete contracts + passing Autopilot + catalog CI]
+    I --> J[Approval-protected SemVer tag]
+    J --> K[GA gates and artifacts]
+    K --> L[GitOps production promotion by digest]
 ```
 
 Superseded runs on the same PR are cancelled. Each GitHub-hosted job is isolated;
@@ -64,6 +66,16 @@ block force-pushes and deletion. Keep `main` as the default PR target. Use
 CODEOWNERS approval when eligible reviewers exist; until then, do not configure
 an impossible reviewer count.
 
+Add a tag ruleset for `v*` that blocks deletion and updates and restricts tag
+creation to the promotion workflow or release administrators. Otherwise, a
+direct tag push could bypass `promote-release.yml`.
+
+Configure the GitHub `release` environment with required reviewers. Set
+`E2E_RUNNER` to a hardened self-hosted runner label that has read-only access to
+the candidate cluster; a GitHub-hosted runner cannot verify a private Kind or
+internal Kubernetes environment. Keep cluster credentials in the environment's
+secret manager, never in repository variables or committed values.
+
 The `merge_group` ref is the disposable integration branch. It tests the exact
 batch GitHub intends to merge, then disappears. This avoids a permanent
 `develop` branch, duplicate release PRs, back-merges, and environment drift.
@@ -74,8 +86,17 @@ may use `vX.Y.Z-rc.N`; production only accepts a final `vX.Y.Z` digest.
 
 1. Queue a feature PR only after its required checks pass. The queue reruns
    **CI / ci-gate** on the synthetic integration commit before merging to `main`.
-2. Confirm the resulting `main` **Build and publish** run succeeds and its
-   immutable SHA images pass development smoke tests.
+2. Confirm the resulting `main` **Build and publish** run succeeds. Use the
+   exact merged SHA rather than local branch state:
+
+   ```bash
+   git fetch origin
+   candidate_sha=$(git rev-parse origin/main)
+   run_id=$(gh run list --commit "$candidate_sha" --workflow release.yml \
+     --limit 1 --json databaseId --jq '.[0].databaseId')
+   test -n "$run_id"
+   gh run watch "$run_id" --exit-status
+   ```
 3. Deploy that exact `sha-<short-commit>` candidate through Helm/Argo CD and run
    Autopilot against the candidate. Every executable child must pass; missing
    contracts remain release blockers rather than skipped successes.
@@ -84,20 +105,28 @@ may use `vX.Y.Z-rc.N`; production only accepts a final `vX.Y.Z` digest.
    instead of hand-writing 18 image overrides:
 
    ```bash
-   scripts/deploy-candidate.sh $(git rev-parse origin/main)
+   scripts/deploy-candidate.sh "$candidate_sha"
    ```
 
    Production should keep image values in Git and let Argo CD reconcile them;
-   the script is for the candidate environment and still verifies main ancestry.
-4. Require **Versioned agent E2E catalog** to pass at the current
+   the script is only for the candidate environment and still verifies main
+   ancestry. A successful script run is a deployment, not a production release.
+   Do not interrupt Helm; if interrupted, recover the pending release with
+   `helm history` and a rollback before retrying.
+4. Confirm discovery reports every scenario executable with a semantic oracle,
+   then run a fresh Autopilot campaign against that exact candidate. Temporal
+   `COMPLETED` means orchestration returned; qualification additionally requires
+   `result.successful: true`, zero failed children, and a catalog commit for
+   every successful child. Old or terminated fleet IDs are not evidence.
+5. Require **Versioned agent E2E catalog** to pass at the current
    `aqe-generated-tests` branch head. This proves the committed generated tests,
    not only their original sandbox execution.
-5. Dispatch **Promote verified candidate** with the final version, full candidate
+6. Dispatch **Promote verified candidate** with the final version, full candidate
    SHA, fleet workflow ID, and candidate namespace. Configure its `release`
    environment with required reviewers. The workflow re-verifies main ancestry,
    the image-build run, every deployed image tag, pod availability, model
-   connectivity, the durable fleet result, and catalog CI before creating the
-   annotated tag:
+   connectivity, complete discovery contracts/oracles, the durable fleet result,
+   and catalog CI before creating the annotated tag:
 
    ```bash
    gh workflow run promote-release.yml \
@@ -107,7 +136,9 @@ may use `vX.Y.Z-rc.N`; production only accepts a final `vX.Y.Z` digest.
      -f namespace=aqe
    ```
 
-6. The tag workflow rejects tags not reachable from `main`, aliases the already
+   Production promotion must wait for the tag-triggered **Build and publish**
+   workflow to finish successfully, not merely for tag creation.
+7. The tag workflow rejects tags not reachable from `main`, aliases the already
    verified multi-architecture `sha-*` manifests with the final SemVer tag
    without rebuilding them, then creates a
    GitHub Release containing the Helm chart and
@@ -117,9 +148,13 @@ may use `vX.Y.Z-rc.N`; production only accepts a final `vX.Y.Z` digest.
    `model-evaluation-shard-*` artifacts, verify SBOM/provenance attestations and
    both `linux/amd64` and `linux/arm64` image manifests. Promote Argo CD values
    by immutable tag or digest; never promote `main`.
-7. Confirm Argo CD sync, preflight, Agent Card validation, ontology ingestion,
+8. Submit a reviewed Git change that pins production to the released image
+   digests and let Argo CD reconcile it. Never run
+   `scripts/deploy-candidate.sh` against production and never deploy a mutable
+   branch tag.
+9. Confirm Argo CD sync, preflight, Agent Card validation, ontology ingestion,
    golden evaluation, metrics, and one agent plus one website smoke journey.
-8. Roll back by restoring the previous image digests in Git and letting Argo CD
+10. Roll back by restoring the previous image digests in Git and letting Argo CD
    reconcile. Preserve PostgreSQL/RustFS evidence and open an incident issue.
 
 This follows common build-once/promote-many practice: CI creates immutable

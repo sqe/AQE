@@ -188,26 +188,33 @@ sequenceDiagram
     T->>G: generate_tests activity
     G->>G: Retrieve versioned RAG context
     G->>G: Generate domain-neutral pytest source
+    G->>G: Deterministic static quality gate
+    opt First candidate violates structural rules
+        G->>G: Regenerate once with exact gate violations
+        G->>G: Repeat deterministic quality gate
+    end
     G->>R: Store immutable candidate source
     G->>DB: Insert PENDING run + target agent metadata
     G-->>T: task_id + grounding provenance
     T->>O: Review candidate + exact RAG/ontology grounding
     O->>R: Persist structured review evidence
-    alt Oracle approves
-        O-->>T: APPROVED with citations
-    else Oracle rejects
-        O-->>T: REJECTED / fail closed
-        T->>G: Regenerate once with structured Oracle feedback
-        G->>R: Store a new immutable candidate
-        T->>O: Review repaired candidate
-        alt Repaired candidate is approved
-            O-->>T: APPROVED with citations
-        else Repair is rejected
-            O-->>T: REJECTED / fail closed
-            T-->>Caller: Workflow failure with final review issues
-        end
-    else Oracle is unavailable
+    alt Oracle is unavailable
         T-->>Caller: Workflow failure; unavailable review fails closed
+    else Oracle responds
+        alt Oracle approves
+            O-->>T: APPROVED with citations
+        else Oracle rejects
+            O-->>T: REJECTED / fail closed
+            T->>G: Regenerate once with structured Oracle feedback
+            G->>R: Store a new immutable candidate
+            T->>O: Review repaired candidate
+            alt Repaired candidate is approved
+                O-->>T: APPROVED with citations
+            else Repair is rejected
+                O-->>T: REJECTED / fail closed
+                T-->>Caller: Workflow failure with final review issues
+            end
+        end
     end
     T->>E: execute_and_repair activity(task_id)
     E->>DB: Resolve RustFS path and target version

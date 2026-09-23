@@ -478,8 +478,9 @@ to the correct HTTP or browser executor.
   optional `RELEASE_SLACK_WEBHOOK_URL` secret for release-channel results.
 - `.github/workflows/promote-release.yml`: the approved promotion entry point.
   It verifies the immutable candidate images running in Kubernetes, model
-  connectivity, a fully passing Autopilot workflow, and green CI at the current
-  `aqe-generated-tests` branch head before creating the final SemVer tag.
+  connectivity, zero missing execution contracts or semantic oracles, a fully
+  passing Autopilot workflow, and green CI at the current `aqe-generated-tests`
+  branch head before creating the final SemVer tag.
 - [`docs/production-release.md`](docs/production-release.md): scalable
   trunk-based merge queue, immutable candidates, SemVer promotion, verification,
   and rollback checklist.

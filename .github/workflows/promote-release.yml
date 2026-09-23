@@ -69,6 +69,11 @@ jobs:
             wget -qO- http://aqe-test-generation:8001/health > /tmp/model-health.json
           python .github/scripts/verify-release-candidate.py model /tmp/model-health.json
           kubectl -n "$NAMESPACE" exec deployment/aqe-frontend -- \
+            wget -qO- --header='Content-Type: application/json' \
+            --post-data='{"card_urls":[],"max_depth":2,"max_agents":50}' \
+            http://aqe-diagnostics:8006/v1/agent-discovery > /tmp/contracts.json
+          python .github/scripts/verify-release-candidate.py contracts /tmp/contracts.json
+          kubectl -n "$NAMESPACE" exec deployment/aqe-frontend -- \
             wget -qO- "http://aqe-workflow-api:8008/v1/qe-runs/$FLEET_WORKFLOW_ID" > /tmp/fleet.json
           python .github/scripts/verify-release-candidate.py fleet /tmp/fleet.json
       - name: Require catalog CI for current generated-test head
