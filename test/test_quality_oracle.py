@@ -6,6 +6,36 @@ import pytest
 from agents.quality_oracle import app as oracle
 
 
+class _ProviderResponse:
+    headers = {}
+
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class _TransientProviderClient:
+    def __init__(self):
+        self.calls = 0
+
+    async def post(self, *_args, **_kwargs):
+        self.calls += 1
+        return _ProviderResponse(503 if self.calls < 3 else 200)
+
+
+async def _completed_sleep(_delay):
+    return None
+
+
+def test_oracle_retries_transient_provider_failures(monkeypatch):
+    client = _TransientProviderClient()
+    monkeypatch.setattr(oracle, "MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(oracle.asyncio, "sleep", _completed_sleep)
+
+    response = asyncio.run(oracle._post_with_retries(client, "https://model.invalid"))
+
+    assert (response.status_code, client.calls) == (200, 3)
+
+
 def test_high_impact_policy_includes_health_and_safety_critical():
     assert oracle.is_high_impact({"data_sensitivity": "health", "impact": "safety_critical"}) is True
 

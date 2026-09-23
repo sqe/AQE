@@ -22,6 +22,7 @@ GEMINI_API_KEY = os.getenv("ORACLE_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY
 REASONING_EFFORT = os.getenv("ORACLE_REASONING_EFFORT", "high")
 MAX_OUTPUT_TOKENS = int(os.getenv("ORACLE_MAX_OUTPUT_TOKENS", "8192"))
 TIMEOUT_SECONDS = float(os.getenv("ORACLE_TIMEOUT_SECONDS", "600"))
+MAX_ATTEMPTS = int(os.getenv("ORACLE_MAX_ATTEMPTS", "3"))
 REQUIRE_INDEPENDENT_HIGH_IMPACT = os.getenv(
     "ORACLE_REQUIRE_INDEPENDENT_MODEL_FOR_HIGH_IMPACT", "true"
 ).lower() == "true"
@@ -128,17 +129,34 @@ def review_content(response: dict[str, Any]) -> str:
     )
 
 
+async def _post_with_retries(
+    client: httpx.AsyncClient,
+    url: str,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Retry transient provider failures while preserving fail-closed review."""
+    for attempt in range(MAX_ATTEMPTS):
+        response = await client.post(url, **kwargs)
+        if response.status_code not in {429, 500, 502, 503, 504} or attempt + 1 == MAX_ATTEMPTS:
+            return response
+        retry_after = response.headers.get("retry-after")
+        delay = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() else 2**attempt
+        await asyncio.sleep(min(delay, 10))
+    raise RuntimeError("unreachable")
+
+
 async def _reason(prompt: str) -> str:
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
         if PROVIDER == "GEMINI":
             if not GEMINI_API_KEY:
                 raise RuntimeError("ORACLE_GEMINI_API_KEY or GEMINI_API_KEY is not configured")
             model = MODEL or "gemini-2.5-pro"
-            response = await client.post(
+            response = await _post_with_retries(
+                client,
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.0, "maxOutputTokens": 4096},
+                    "generationConfig": {"temperature": 0.0, "maxOutputTokens": MAX_OUTPUT_TOKENS},
                 },
                 headers={"x-goog-api-key": GEMINI_API_KEY},
             )
@@ -167,7 +185,7 @@ async def _reason(prompt: str) -> str:
         }
         if MODEL:
             payload["model"] = MODEL
-        response = await client.post(ENDPOINT, json=payload)
+        response = await _post_with_retries(client, ENDPOINT, json=payload)
         response.raise_for_status()
         return review_content(response.json())
 
