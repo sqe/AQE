@@ -41,6 +41,8 @@ spec:
             - {name: AGENT_PORT, value: {{ $agent.port | quote }}}
             - {name: GRAPH_API_URL, value: "http://aqe-diagnostics:8006/v1/graph/events"}
             - {name: GITHUB_SOURCE_ALLOWED_REPOSITORIES, value: {{ $root.Values.config.githubSourceAllowedRepositories | quote }}}
+            - {name: GITHUB_SOURCE_EVALUATION_REPOSITORY, value: {{ $root.Values.config.githubSourceEvaluationRepository | quote }}}
+            - {name: GITHUB_SOURCE_EVALUATION_REF, value: {{ $root.Values.config.githubSourceEvaluationRef | quote }}}
             - {name: AGENT_PROBE_ALLOWED_HOSTS, value: {{ $root.Values.config.agentProbeAllowedHosts | quote }}}
             - {name: AGENT_CARD_URLS, value: "agent-builder=http://aqe-agent-builder:8015/agent_card,artifact-management=http://aqe-artifact-management:8007/agent_card,change-detection=http://aqe-change-detection:8000/agent_card,dbt-builder=http://aqe-dbt-builder:8016/agent_card,diagnostics=http://aqe-diagnostics:8006/agent_card,github-analysis=http://aqe-github-analysis:8010/agent_card,github-connector=http://aqe-github-connector:8014/agent_card,github-commit=http://aqe-github-commit:8011/agent_card,knowledge-ingestion=http://aqe-knowledge-ingestion:8004/agent_card,quality-oracle=http://aqe-quality-oracle:8017/agent_card,test-generation=http://aqe-test-generation:8001/agent_card,test-execution=http://aqe-test-execution:8003/agent_card,webpage-state-capture=http://aqe-webpage-state-capture:8002/agent_card,website-execution=http://aqe-website-execution:8013/agent_card,aqe-byoa=http://aqe-byoa:8009/.well-known/agent.json"}
             - {name: STATE_CAPTURE_URL, value: "http://aqe-webpage-state-capture:8002"}

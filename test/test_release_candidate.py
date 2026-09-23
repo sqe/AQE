@@ -1,4 +1,5 @@
 import importlib.util
+from pathlib import Path
 
 import pytest
 
@@ -100,3 +101,9 @@ def test_catalog_commits_are_extracted_from_successful_fleet_evidence():
     }
 
     assert verify.catalog_commits(payload) == [commit]
+
+
+def test_candidate_deployer_pins_source_evaluation_to_candidate_sha():
+    deployer = Path("scripts/deploy-candidate.sh").read_text()
+
+    assert "githubSourceEvaluationRef: $candidate_sha" in deployer
