@@ -10,7 +10,8 @@ See [Architecture and operating rules](docs/architecture.md) for the complete
 Temporal rules, Mermaid flow diagrams, deployment procedures, BYOA protocol,
 and internal/external agent examples. Use the
 [agent testing runbook](docs/testing-agents.md) to test current AQE agents or
-onboard a new internal or external agent.
+onboard a new internal or external agent. For a concise product and technical
+overview, read [AQE: verified testing for AI-native systems](docs/pitch.md).
 
 ## Architecture
 
