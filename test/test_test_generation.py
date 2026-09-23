@@ -86,3 +86,48 @@ def test_agent_card_declares_executable_generation_contract():
         "generate_tests",
         "SUCCESS",
     )
+
+
+def test_generation_repairs_static_quality_before_oracle():
+    invalid = """
+AQE_TEST_LAYER = "agentic"
+AQE_SUITE_ID = "sample-contract"
+AQE_SKILL_TESTS = {"sample.run": {"positive": "test_sample_run_positive"}}
+def test_sample_run_positive():
+    assert 1 == 1
+    assert 2 == 2
+"""
+    valid = """
+AQE_TEST_LAYER = "agentic"
+AQE_SUITE_ID = "sample-contract"
+AQE_SKILL_TESTS = {"sample.run": {"positive": "test_sample_run_positive"}}
+def test_sample_run_positive():
+    assert (1, 2) == (1, 2)
+"""
+
+    class Generator:
+        def __init__(self):
+            self.calls = []
+
+        async def generate_code(self, prompt):
+            self.calls.append(prompt)
+            return invalid if len(self.calls) == 1 else valid
+
+    logic = test_generation.TestGenerationAgentLogic()
+    asyncio.run(logic.llm_service.close())
+    logic.llm_service = Generator()
+
+    candidate, issues = asyncio.run(logic.generate_quality_candidate(
+        "generate tests",
+        {
+            "skills": ["sample.run"],
+            "scenarios": [{"skill_id": "sample.run", "required_dimensions": ["positive"]}],
+        },
+    ))
+
+    assert (
+        issues,
+        candidate,
+        len(logic.llm_service.calls),
+        "single-outcome" in logic.llm_service.calls[1],
+    ) == ([], valid.strip(), 2, True)
