@@ -442,6 +442,172 @@ def test_github_tools_call_semantic_accuracy(client):
 '''
 
 
+def compile_declared_dbt_builder_suite(captured_state: Dict[str, Any]) -> Optional[str]:
+    """Compile the complete first-party DBT Builder contract without an LLM."""
+    scenarios = {
+        str(scenario.get("scenario_id")): scenario
+        for scenario in captured_state.get("scenarios", [])
+        if isinstance(scenario, dict)
+    }
+    build = scenarios.get("build-orders-project")
+    validate = scenarios.get("validate-orders-project")
+    dimensions = {"positive", "protocol_schema", "malformed_input", "latency", "semantic_accuracy"}
+    if not build or not validate:
+        return None
+    if build.get("skill_id") != "dbt.blueprint.build" or validate.get("skill_id") != "dbt.project.validate":
+        return None
+    if set(build.get("required_dimensions") or []) != dimensions:
+        return None
+    if set(validate.get("required_dimensions") or []) != dimensions:
+        return None
+
+    build_prompt = build.get("prompt")
+    validate_prompt = validate.get("prompt")
+    build_expected = build.get("expected_response")
+    validate_expected = validate.get("expected_response")
+    build_url = (build.get("invocation") or {}).get("url")
+    validate_url = (validate.get("invocation") or {}).get("url")
+    if not (
+        isinstance(build_prompt, dict)
+        and isinstance(validate_prompt, dict)
+        and isinstance(build_expected, dict)
+        and isinstance(validate_expected, dict)
+        and build_expected.get("status") == "REVIEW_REQUIRED"
+        and build_expected.get("deployment_allowed") is False
+        and validate_expected.get("status") == "VALID"
+        and validate_expected.get("validation_errors") == []
+        and isinstance(build_url, str)
+        and isinstance(validate_url, str)
+    ):
+        return None
+
+    base_url = str(captured_state.get("url") or "").rstrip("/")
+    build_path = urlparse(build_url).path
+    validate_path = urlparse(validate_url).path
+    build_latency_seconds = float(build.get("max_latency_ms", 600000)) / 1000
+    validate_latency_seconds = float(validate.get("max_latency_ms", 1000)) / 1000
+    return f'''"""Deterministically compiled DBT Builder contract tests."""
+
+import os
+import time
+
+import httpx
+import pytest
+
+
+AQE_TEST_LAYER = "db"
+AQE_SUITE_ID = "dbt-builder-contract"
+AQE_SKILL_TESTS = {{
+    "dbt.blueprint.build": {{
+        "positive": "test_dbt_blueprint_build_positive_status",
+        "protocol_schema": "test_dbt_blueprint_build_protocol_schema_body_object",
+        "malformed_input": "test_dbt_blueprint_build_malformed_input_status",
+        "latency": "test_dbt_blueprint_build_latency_budget",
+        "semantic_accuracy": [
+            "test_dbt_blueprint_build_semantic_accuracy_status",
+            "test_dbt_blueprint_build_semantic_accuracy_deployment_allowed",
+        ],
+    }},
+    "dbt.project.validate": {{
+        "positive": "test_dbt_project_validate_positive_status",
+        "protocol_schema": "test_dbt_project_validate_protocol_schema_body_object",
+        "malformed_input": "test_dbt_project_validate_malformed_input_status",
+        "latency": "test_dbt_project_validate_latency_budget",
+        "semantic_accuracy": [
+            "test_dbt_project_validate_semantic_accuracy_status",
+            "test_dbt_project_validate_semantic_accuracy_validation_errors",
+        ],
+    }},
+}}
+
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", {base_url!r})
+BUILD_PATH = {build_path!r}
+VALIDATE_PATH = {validate_path!r}
+BUILD_REQUEST = {build_prompt!r}
+VALIDATE_REQUEST = {validate_prompt!r}
+
+
+@pytest.fixture(scope="module")
+def client():
+    with httpx.Client(base_url=AGENT_BASE_URL, timeout={build_latency_seconds + 30!r}) as value:
+        yield value
+
+
+@pytest.fixture(scope="module")
+def dbt_blueprint_build_result(client):
+    started = time.monotonic()
+    response = client.post(BUILD_PATH, json=BUILD_REQUEST)
+    return response, time.monotonic() - started
+
+
+@pytest.fixture(scope="module")
+def dbt_project_validate_result(client):
+    started = time.monotonic()
+    response = client.post(VALIDATE_PATH, json=VALIDATE_REQUEST)
+    return response, time.monotonic() - started
+
+
+def test_dbt_blueprint_build_positive_status(dbt_blueprint_build_result):
+    response, _ = dbt_blueprint_build_result
+    assert response.status_code == 200
+
+
+def test_dbt_blueprint_build_protocol_schema_body_object(dbt_blueprint_build_result):
+    response, _ = dbt_blueprint_build_result
+    assert isinstance(response.json(), dict)
+
+
+def test_dbt_blueprint_build_malformed_input_status(client):
+    response = client.post(BUILD_PATH, json={{}})
+    assert response.status_code == 400
+
+
+def test_dbt_blueprint_build_latency_budget(dbt_blueprint_build_result):
+    _, elapsed = dbt_blueprint_build_result
+    assert elapsed <= {build_latency_seconds!r}
+
+
+def test_dbt_blueprint_build_semantic_accuracy_status(dbt_blueprint_build_result):
+    response, _ = dbt_blueprint_build_result
+    assert response.json().get("status") == {build_expected["status"]!r}
+
+
+def test_dbt_blueprint_build_semantic_accuracy_deployment_allowed(dbt_blueprint_build_result):
+    response, _ = dbt_blueprint_build_result
+    assert response.json().get("deployment_allowed") is False
+
+
+def test_dbt_project_validate_positive_status(dbt_project_validate_result):
+    response, _ = dbt_project_validate_result
+    assert response.status_code == 200
+
+
+def test_dbt_project_validate_protocol_schema_body_object(dbt_project_validate_result):
+    response, _ = dbt_project_validate_result
+    assert isinstance(response.json(), dict)
+
+
+def test_dbt_project_validate_malformed_input_status(client):
+    response = client.post(VALIDATE_PATH, json={{}})
+    assert response.status_code == 400
+
+
+def test_dbt_project_validate_latency_budget(dbt_project_validate_result):
+    _, elapsed = dbt_project_validate_result
+    assert elapsed <= {validate_latency_seconds!r}
+
+
+def test_dbt_project_validate_semantic_accuracy_status(dbt_project_validate_result):
+    response, _ = dbt_project_validate_result
+    assert response.json().get("status") == {validate_expected["status"]!r}
+
+
+def test_dbt_project_validate_semantic_accuracy_validation_errors(dbt_project_validate_result):
+    response, _ = dbt_project_validate_result
+    assert response.json().get("validation_errors") == {validate_expected["validation_errors"]!r}
+'''
+
+
 class LLMServiceClient:
     """Handles all asynchronous communication with the LLM service, supporting Gemini and Self-Hosted modes."""
     def __init__(self, mode: str, api_key: str):
@@ -972,9 +1138,12 @@ weaken assertions, or add undeclared behavior. Return Python source only.
         """
         Generates production-ready Python for one explicitly selected test runtime.
         """
-        compiled_suite = compile_declared_github_mcp_suite(captured_state)
+        compiled_suite = (
+            compile_declared_github_mcp_suite(captured_state)
+            or compile_declared_dbt_builder_suite(captured_state)
+        )
         if compiled_suite:
-            logger.info("Compiled declared GitHub MCP contract without generation-model inference")
+            logger.info("Compiled declared first-party contract without generation-model inference")
             return {
                 "test_code": compiled_suite,
                 "artifact_version_used": "DECLARED_CONTRACT",

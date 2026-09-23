@@ -194,3 +194,44 @@ def test_generation_image_packages_static_quality_gate():
     dockerfile = Path("agents/test_generation/Dockerfile").read_text()
 
     assert "COPY agents/test_execution/test_quality.py /app/agents/test_execution/test_quality.py" in dockerfile
+
+
+def test_dbt_builder_contract_compiles_without_generation_model():
+    dimensions = ["positive", "protocol_schema", "malformed_input", "latency", "semantic_accuracy"]
+    state = {
+        "url": "http://aqe-dbt-builder:8016",
+        "skills": ["dbt.blueprint.build", "dbt.project.validate"],
+        "scenarios": [
+            {
+                "scenario_id": "build-orders-project",
+                "skill_id": "dbt.blueprint.build",
+                "required_dimensions": dimensions,
+                "prompt": {
+                    "goals": "Create documented order metrics",
+                    "sources": [{"name": "raw.orders", "columns": ["id", "status"]}],
+                    "dialect": "snowflake",
+                },
+                "expected_response": {"status": "REVIEW_REQUIRED", "deployment_allowed": False},
+                "max_latency_ms": 600000,
+                "invocation": {"url": "http://aqe-dbt-builder:8016/v1/missions"},
+            },
+            {
+                "scenario_id": "validate-orders-project",
+                "skill_id": "dbt.project.validate",
+                "required_dimensions": dimensions,
+                "prompt": {"files": {"dbt_project.yml": "name: aqe"}, "dialect": "snowflake"},
+                "expected_response": {"status": "VALID", "validation_errors": []},
+                "max_latency_ms": 1000,
+                "invocation": {"url": "http://aqe-dbt-builder:8016/v1/projects/validate"},
+            },
+        ],
+    }
+
+    suite = test_generation.compile_declared_dbt_builder_suite(state)
+
+    assert suite is not None and test_generation.inspect_test_code(
+        suite,
+        state["skills"],
+        {skill: dimensions for skill in state["skills"]},
+        require_semantic_names=True,
+    ) == []
