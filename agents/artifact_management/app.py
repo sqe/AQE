@@ -34,6 +34,7 @@ logger = logging.getLogger("ArtifactManagementAgent")
 
 # --- Configuration (using environment variables for production) ---
 POSTGRES_DB_URL = os.environ.get("POSTGRES_URL", "postgresql://user:pass@postgres:5432/qe_db")
+PUBLIC_BASE_URL = os.environ.get("ARTIFACT_MANAGEMENT_PUBLIC_URL", "http://artifact_management_agent:8007").rstrip("/")
 
 # --- 1. Agent Logic (Pure Business Logic) ---
 
@@ -208,16 +209,60 @@ async def agent_card_endpoint(request: Request):
     Handles the GET request to /agent_card for health check and metadata.
     """
     agent_id = os.environ.get("AGENT_ID", "ArtifactManagementAgent")
+    candidate_id = "aqe-candidate-smoke-artifact"
     return JSONResponse(
         {
             "status": "UP",
             "agent_id": agent_id,
             "version": "1.0.0",
-            "skills": [{"id": "upload_artifact"}],
+            "skills": [{
+                "id": "upload_artifact",
+                "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/candidate-smoke"},
+                "examples": [{"candidate_id": candidate_id}],
+            }],
+            "evaluation": {"cases": [{
+                "id": "upload-disposable-candidate-artifact",
+                "skill_id": "upload_artifact",
+                "prompt": {"candidate_id": candidate_id},
+                "expected_response": {"status_code": 200, "status": "SUCCESS", "candidate_id": candidate_id, "cleaned_up": True},
+                "required_dimensions": ["positive", "protocol_schema", "state_isolation", "latency"],
+                "max_latency_ms": 10000,
+                "min_accuracy": 1.0,
+            }]},
             "message": "Agent is healthy.",
         },
         status_code=200
     )
+
+
+async def candidate_smoke_endpoint(request: Request):
+    """Exercise object storage and registration with a disposable artifact type."""
+    body = await request.json()
+    candidate_id = body.get("candidate_id", "")
+    if not isinstance(candidate_id, str) or not candidate_id.startswith("aqe-candidate-smoke"):
+        return JSONResponse({"status": "FAILED", "error": "candidate_id must start with aqe-candidate-smoke"}, status_code=400)
+    unique_type = f"{candidate_id}-{uuid.uuid4().hex}"
+    logic = ArtifactManagementAgentLogic()
+    object_path = None
+    try:
+        version_id = await logic.upload_and_register_artifact(
+            json.dumps({"candidate_id": candidate_id}), unique_type
+        )
+        object_path = f"{unique_type}/{version_id}/data.json"
+        return JSONResponse({
+            "status": "SUCCESS", "candidate_id": candidate_id,
+            "artifact_type": unique_type, "version_id": version_id, "cleaned_up": True,
+        })
+    finally:
+        if logic.db_pool:
+            async with logic.db_pool.acquire() as conn:
+                await conn.execute("DELETE FROM active_artifacts WHERE artifact_type = $1", unique_type)
+        if object_path and logic.object_store:
+            await asyncio.to_thread(
+                logic.object_store.client.delete_object,
+                Bucket=logic.object_store.bucket, Key=object_path,
+            )
+        await logic.tear_down()
 
 
 # --- 3. Server Startup (The Executor that makes the agent runnable) ---
@@ -273,6 +318,7 @@ if __name__ == '__main__':
     custom_routes = [
         Route("/health", endpoint=health_endpoint, methods=["GET"]), # <-- NEW Health Route
         Route("/agent_card", endpoint=agent_card_endpoint, methods=["GET"]),
+        Route("/v1/candidate-smoke", endpoint=candidate_smoke_endpoint, methods=["POST"]),
     ]
     
     # Insert custom routes at the beginning of the A2A routes list

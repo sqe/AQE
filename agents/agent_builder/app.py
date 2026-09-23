@@ -24,6 +24,7 @@ from utils.object_store import ObjectStore
 GENERATION_ENDPOINT = os.getenv("LLM_GENERATION_ENDPOINT", "")
 GENERATION_MODEL = os.getenv("LLM_GENERATION_MODEL", "")
 SOURCE_ANALYSIS_URL = os.getenv("SOURCE_ANALYSIS_URL", "http://aqe-github-analysis:8010/v1/analyze")
+PUBLIC_BASE_URL = os.getenv("AGENT_BUILDER_PUBLIC_URL", "http://agent_builder_agent:8015").rstrip("/")
 REQUIRED_FILES = {
     "agent/app.py",
     "agent/requirements.txt",
@@ -180,7 +181,31 @@ async def agent_card() -> dict[str, Any]:
         "version": "0.1.0",
         "status": "UP" if GENERATION_ENDPOINT else "DEGRADED",
         "description": "Builds review-only agent source bundles from specifications and pinned evidence",
-        "skills": [{"id": "agent.build.experimental", "description": "Generate and validate an agent bundle"}],
+        "skills": [
+            {
+                "id": "agent.build.experimental",
+                "description": "Generate and validate a review-only agent bundle",
+                "examples": [{"spec": "Create a review-only HTTP agent that returns a fixed greeting."}],
+                "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/builds"},
+            }
+        ],
+        "evaluation": {
+            "cases": [
+                {
+                    "id": "build-minimal-review-only-agent",
+                    "skill_id": "agent.build.experimental",
+                    "prompt": {"spec": "Create a minimal review-only HTTP agent with one fixed greeting endpoint. Do not deploy it."},
+                    "expected_response": {
+                        "status": "REVIEW_REQUIRED",
+                        "deployment_allowed": False,
+                        "quality_errors": [],
+                        "files": sorted(REQUIRED_FILES),
+                    },
+                    "max_latency_ms": 600000,
+                    "min_accuracy": 1.0,
+                }
+            ]
+        },
         "recommendation": None if GENERATION_ENDPOINT else "Configure the generation model endpoint.",
     }
 

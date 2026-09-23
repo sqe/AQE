@@ -30,10 +30,15 @@ CARD = {
     "result_topic": RESULT_TOPIC,
     "version": "2.0.0",
     "skills": [
-        {"id": "qe.run", "description": "Start a durable end-to-end quality-engineering run"},
-        {"id": "qe.validate", "description": "Execute a persisted test run in the AQE sandbox"},
-        {"id": "qe.repair", "description": "Repair and re-run a failing persisted test run"},
+        {"id": "qe.run", "description": "Start a durable end-to-end quality-engineering run", "invocation": {"protocol": "jsonrpc-kafka", "method": "qe.run", "url": f"kafka://{KAFKA_BOOTSTRAP_SERVERS}/{TASK_TOPIC}", "topic": TASK_TOPIC}},
+        {"id": "qe.validate", "description": "Execute a persisted test run in the AQE sandbox", "invocation": {"protocol": "jsonrpc-kafka", "method": "qe.validate", "url": f"kafka://{KAFKA_BOOTSTRAP_SERVERS}/{TASK_TOPIC}", "topic": TASK_TOPIC}},
+        {"id": "qe.repair", "description": "Repair and re-run a failing persisted test run", "invocation": {"protocol": "jsonrpc-kafka", "method": "qe.repair", "url": f"kafka://{KAFKA_BOOTSTRAP_SERVERS}/{TASK_TOPIC}", "topic": TASK_TOPIC}},
     ],
+    "evaluation": {"cases": [
+        {"id": "run-safe-candidate", "skill_id": "qe.run", "prompt": {"target_evidence": {"agent_card_url": "https://candidate.invalid/.well-known/agent.json", "skills": ["candidate.echo"], "expected_behavior": "echoes supplied text"}, "candidate_only": True, "production_mutation": False}, "expected_response": {"status": "accepted", "workflow_id": {"prefix": "qe-"}}, "required_dimensions": ["semantic_accuracy", "explicit_target_evidence", "no_production_mutation"]},
+        {"id": "validate-persisted-candidate", "skill_id": "qe.validate", "prompt": {"task_id": "from disposable execution fixture"}, "expected_response": {"successful": True, "summary": {"passed": {"min": 1}}}, "required_dimensions": ["semantic_accuracy", "sandbox_execution"]},
+        {"id": "repair-persisted-candidate", "skill_id": "qe.repair", "prompt": {"task_id": "from disposable execution fixture"}, "expected_response": {"attempts": {"min_items": 1}}, "required_dimensions": ["semantic_accuracy", "bounded_repair"]},
+    ]},
 }
 
 processed_tasks = 0
@@ -56,7 +61,19 @@ def _normalize(payload: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
 async def handle(payload: dict[str, Any]) -> dict[str, Any]:
     request_id, method, params = _normalize(payload)
     if method == "qe.run":
-        url, body = WORKFLOW_URL, params
+        evidence = params.get("target_evidence")
+        if not isinstance(evidence, dict) or not evidence.get("agent_card_url") or not evidence.get("skills") or not evidence.get("expected_behavior"):
+            return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "qe.run requires target_evidence with agent_card_url, skills, and expected_behavior"}}
+        if params.get("candidate_only") is not True or params.get("production_mutation") is not False:
+            return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "qe.run requires candidate_only=true and production_mutation=false"}}
+        url, body = WORKFLOW_URL, {
+            **params,
+            "url": evidence["agent_card_url"],
+            "test_type": "agent",
+            "spec": evidence["expected_behavior"],
+            "candidate_only": True,
+            "production_mutation": False,
+        }
     elif method in {"qe.validate", "qe.repair"}:
         url = EXECUTION_URL
         body = {"task_id": params.get("task_id"), "repair": method == "qe.repair"}

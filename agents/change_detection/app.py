@@ -47,6 +47,7 @@ TARGET_URL = os.environ.get("TARGET_URL", "http://default-target.com")
 PRODUCT_SPECS = os.environ.get("PRODUCT_SPECS", "No specs provided.")
 REPO_OWNER = os.environ.get("REPO_OWNER", "default-owner") 
 REPO_NAME = os.environ.get("REPO_NAME", "default-repo")
+PUBLIC_BASE_URL = os.environ.get("CHANGE_DETECTION_PUBLIC_URL", "http://change_detection_agent:8000").rstrip("/")
 
 
 # --- 1. Agent Logic (Pure Business Logic) ---
@@ -115,14 +116,15 @@ class ChangeDetectionAgentLogic:
         data_to_hash = f"{self.target_url}-{self.product_specs}"
         return hashlib.sha256(data_to_hash.encode()).hexdigest()
 
-    async def detect_and_update(self) -> Dict[str, Any]:
+    async def detect_and_update(self, candidate_mode: bool = False, candidate_id: Optional[str] = None) -> Dict[str, Any]:
         """The main orchestration workflow for change detection."""
         
         # CRITICAL: Ensure async clients are ready before proceeding
-        try:
-            await self._ensure_clients_ready()
-        except RuntimeError as e:
-            return {"status": "FAILURE", "reason": f"Infrastructure Error: {e}"}
+        if not candidate_mode:
+            try:
+                await self._ensure_clients_ready()
+            except RuntimeError as e:
+                return {"status": "FAILURE", "reason": f"Infrastructure Error: {e}"}
 
 
         task_id = self._get_cache_key()
@@ -130,7 +132,7 @@ class ChangeDetectionAgentLogic:
         
         # 1. Redis Check: Check for a final cached result
         try:
-            cached_result = await self.redis_client.get(f"final_result:{task_id}")
+            cached_result = None if candidate_mode else await self.redis_client.get(f"final_result:{task_id}")
             if cached_result:
                 logger.info("1. Redis Hit: Returning cached final test result.")
                 return json.loads(cached_result)
@@ -179,6 +181,18 @@ class ChangeDetectionAgentLogic:
             execution_results = {"successful": False, "summary": f"Execution failed due to A2A error: {e}"}
 
         test_passed = execution_results.get("successful", False)
+
+        if candidate_mode:
+            return {
+                "status": "SUCCESS" if test_passed else "FAILURE",
+                "candidate_id": candidate_id,
+                "dry_run": True,
+                "capture_executed": True,
+                "generation_executed": True,
+                "execution_summary": execution_results,
+                "commit_published": False,
+                "result_event_published": False,
+            }
         
         # --- Reporting and Cleanup Steps ---
         
@@ -265,16 +279,37 @@ async def agent_card_endpoint(request: Request):
     This is the required route for the orchestrator frontend.
     """
     agent_id = os.environ.get("AGENT_ID", "ChangeDetectionAgent")
+    candidate_id = "aqe-candidate-smoke-change-detection"
     return JSONResponse(
         {
             "status": "UP",
             "agent_id": agent_id,
             "version": "1.0.0",
-            "skills": [{"id": "detect_change_and_orchestrate"}],
+            "skills": [{
+                "id": "detect_change_and_orchestrate",
+                "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/candidate-smoke"},
+            }],
+            "evaluation": {"cases": [{
+                "id": "dry-run-change-orchestration", "skill_id": "detect_change_and_orchestrate",
+                "prompt": {"candidate_id": candidate_id},
+                "expected_response": {"status_code": 200, "status": "SUCCESS", "candidate_id": candidate_id, "dry_run": True, "commit_published": False, "result_event_published": False},
+                "required_dimensions": ["positive", "protocol_schema", "side_effect_isolation", "latency"],
+                "max_latency_ms": 120000, "min_accuracy": 1.0,
+            }]},
             "message": "Agent is healthy.",
         },
         status_code=200
     )
+
+
+async def candidate_smoke_endpoint(request: Request):
+    body = await request.json()
+    candidate_id = body.get("candidate_id", "")
+    if not isinstance(candidate_id, str) or not candidate_id.startswith("aqe-candidate-smoke"):
+        return JSONResponse({"status": "FAILED", "error": "candidate_id must start with aqe-candidate-smoke"}, status_code=400)
+    logic = ChangeDetectionAgentLogic(TARGET_URL, PRODUCT_SPECS, REPO_OWNER, REPO_NAME)
+    result = await logic.detect_and_update(candidate_mode=True, candidate_id=candidate_id)
+    return JSONResponse(result, status_code=200 if result.get("status") == "SUCCESS" else 422)
 
 
 async def detect_changes_endpoint(request: Request):
@@ -359,7 +394,8 @@ if __name__ == '__main__':
         # Required health check route
         Route("/agent_card", endpoint=agent_card_endpoint, methods=["GET"]),
         # Custom logic route
-        Route("/detect_changes", endpoint=detect_changes_endpoint, methods=["POST"])
+        Route("/detect_changes", endpoint=detect_changes_endpoint, methods=["POST"]),
+        Route("/v1/candidate-smoke", endpoint=candidate_smoke_endpoint, methods=["POST"]),
     ]
     
     # Insert custom routes at the beginning of the A2A routes list

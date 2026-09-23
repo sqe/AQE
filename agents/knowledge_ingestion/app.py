@@ -53,6 +53,7 @@ QDRANT_PORT = int(os.environ.get("QDRANT_PORT", 6333))
 QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or None
 QDRANT_HTTPS = os.environ.get("QDRANT_HTTPS", "false").lower() == "true"
 COLLECTION_NAME = "product_knowledge"
+PUBLIC_BASE_URL = os.environ.get("KNOWLEDGE_INGESTION_PUBLIC_URL", "http://knowledge_ingestion_agent:8004").rstrip("/")
 EMBEDDING_DIMENSION = 384 # Must match the dimension used in TestGenerationAgent
 MAX_DOCUMENT_BYTES = int(os.environ.get("MAX_DOCUMENT_BYTES", str(10 * 1024 * 1024)))
 SUPPORTED_DOCUMENT_TYPES = {".txt", ".md", ".rst", ".json", ".yaml", ".yml", ".csv", ".html", ".htm", ".pdf", ".docx"}
@@ -332,6 +333,25 @@ class LLMFineTuningAgentLogic:
             logger.error(f"Artifact registration failed: {e}")
             return {"status": "FAILED", "error": f"Artifact registration error: {e}"}
 
+    async def ingest_candidate(self, candidate_id: str, records: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Embed and persist records in a temporary collection, then remove it."""
+        collection = f"{candidate_id}-{uuid.uuid4().hex}"
+        try:
+            await asyncio.to_thread(
+                self.qdrant_client.create_collection,
+                collection_name=collection,
+                vectors_config=models.VectorParams(size=EMBEDDING_DIMENSION, distance=models.Distance.COSINE),
+            )
+            points = [models.PointStruct(
+                id=str(uuid.uuid4()), vector=embed_text(record["text"]),
+                payload={"candidate_id": candidate_id, "record_id": record["id"], "text_chunk": record["text"]},
+            ) for record in records]
+            await asyncio.to_thread(self.qdrant_client.upsert, collection_name=collection, points=points, wait=True)
+            count = (await asyncio.to_thread(self.qdrant_client.count, collection_name=collection, exact=True)).count
+            return {"status": "SUCCESS", "candidate_id": candidate_id, "records_ingested": count, "cleaned_up": True}
+        finally:
+            await asyncio.to_thread(self.qdrant_client.delete_collection, collection_name=collection)
+
     async def ingest_agent_ontology(self) -> Dict[str, str]:
         """Validate, vectorize, and version the bundled agent ontology."""
         try:
@@ -462,16 +482,48 @@ async def agent_card_endpoint(request: Request):
     This is the required route for the AQE orchestrator frontend.
     """
     agent_id = os.environ.get("AGENT_ID", "LLMKnowledgeIngestionAgent")
+    candidate_id = "aqe-candidate-smoke-knowledge"
+    skills = [
+        {"id": "ingest_knowledge", "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/candidate-smoke/knowledge"}},
+        {"id": "ingest_ontology", "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/candidate-smoke/ontology"}},
+    ]
+    cases = [{
+        "id": f"candidate-{kind}", "skill_id": f"ingest_{kind}",
+        "prompt": {"candidate_id": candidate_id},
+        "expected_response": {"status_code": 200, "status": "SUCCESS", "candidate_id": candidate_id, "cleaned_up": True},
+        "required_dimensions": ["positive", "protocol_schema", "state_isolation", "latency"],
+        "max_latency_ms": 10000, "min_accuracy": 1.0,
+    } for kind in ("knowledge", "ontology")]
     return JSONResponse(
         {
             "status": "UP",
             "agent_id": agent_id,
             "version": "1.0.0",
-            "skills": [{"id": "ingest_knowledge"}, {"id": "ingest_ontology"}],
+            "skills": skills,
+            "evaluation": {"cases": cases},
             "message": "Agent is healthy.",
         },
         status_code=200
     )
+
+
+async def candidate_ingestion_handler(request: Request):
+    body = await request.json()
+    candidate_id = body.get("candidate_id", "")
+    if not isinstance(candidate_id, str) or not candidate_id.startswith("aqe-candidate-smoke"):
+        return JSONResponse({"status": "FAILED", "error": "candidate_id must start with aqe-candidate-smoke"}, status_code=400)
+    kind = request.path_params["kind"]
+    if kind == "ontology":
+        records = [
+            {**record, "id": f"{candidate_id}-{uuid.uuid4().hex}"}
+            for record in ontology_records(load_ontology())
+        ]
+    elif kind == "knowledge":
+        records = [{"id": f"{candidate_id}-{uuid.uuid4().hex}", "text": f"{candidate_id} requirements must remain isolated."}]
+    else:
+        return JSONResponse({"status": "FAILED", "error": "unsupported candidate kind"}, status_code=404)
+    result = await AGENT_LOGIC.ingest_candidate(candidate_id, records)
+    return JSONResponse(result)
 
 async def ingest_knowledge_handler(request: Request):
     """Handles the custom HTTP POST request from the frontend."""
@@ -572,6 +624,7 @@ if __name__ == '__main__':
         Route("/ingest_ontology", endpoint=ingest_ontology_handler, methods=["POST"]),
         Route("/v1/documents", endpoint=ingest_document_handler, methods=["POST"]),
         Route("/v1/stats", endpoint=platform_stats_handler, methods=["GET"]),
+        Route("/v1/candidate-smoke/{kind}", endpoint=candidate_ingestion_handler, methods=["POST"]),
     ]
 
     # 6. Create the main Starlette application and mount the A2A app
