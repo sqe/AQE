@@ -3,7 +3,10 @@ name: Versioned agent E2E catalog
 on:
   push:
     branches: [aqe-generated-tests]
-    paths: [generated-tests/**, generated-findings/**]
+    paths:
+      - generated-tests/**
+      - generated-findings/**
+      - .github/workflows/generated-tests.yml
   workflow_dispatch: {}
 
 permissions:
@@ -15,7 +18,7 @@ concurrency:
 
 jobs:
   agent-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.E2E_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     environment: generated-agent-e2e
     steps:
@@ -25,6 +28,7 @@ jobs:
       - run: pip install pytest httpx
       - name: Run versioned HTTP agent tests
         env:
+          PYTHONPATH: ${{ github.workspace }}
           AGENT_BASE_URL: ${{ vars.AGENT_BASE_URL }}
           AGENT_CARD_URL: ${{ vars.AGENT_CARD_URL }}
           TARGET_AUTH_TYPE: ${{ vars.TARGET_AUTH_TYPE }}
@@ -32,10 +36,10 @@ jobs:
           TARGET_AUTH_USERNAME: ${{ secrets.TARGET_AUTH_USERNAME }}
           TARGET_AUTH_PASSWORD: ${{ secrets.TARGET_AUTH_PASSWORD }}
           TARGET_AUTH_API_KEY: ${{ secrets.TARGET_AUTH_API_KEY }}
-        run: test ! -d generated-tests/agent || pytest -q generated-tests/agent
+        run: test ! -d generated-tests/agent || python -m pytest -q generated-tests/agent
 
   website-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.E2E_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     environment: generated-agent-e2e
     steps:
@@ -46,6 +50,7 @@ jobs:
       - run: playwright install --with-deps chromium
       - name: Run versioned Playwright website tests
         env:
+          PYTHONPATH: ${{ github.workspace }}
           TARGET_BASE_URL: ${{ vars.TARGET_BASE_URL }}
           TARGET_AUTH_TYPE: ${{ vars.TARGET_AUTH_TYPE }}
           TARGET_AUTH_LOGIN_URL: ${{ vars.TARGET_AUTH_LOGIN_URL }}
@@ -54,10 +59,10 @@ jobs:
           TARGET_AUTH_SUBMIT_SELECTOR: ${{ vars.TARGET_AUTH_SUBMIT_SELECTOR }}
           TARGET_AUTH_USERNAME: ${{ secrets.TARGET_AUTH_USERNAME }}
           TARGET_AUTH_PASSWORD: ${{ secrets.TARGET_AUTH_PASSWORD }}
-        run: test ! -d generated-tests/website || pytest -q generated-tests/website
+        run: test ! -d generated-tests/website || python -m pytest -q generated-tests/website
 
   confirmed-findings:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.E2E_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     environment: generated-agent-e2e
     steps:
@@ -68,6 +73,7 @@ jobs:
       - run: playwright install --with-deps chromium
       - name: Verify confirmed issues still reproduce as assertion failures
         env:
+          PYTHONPATH: ${{ github.workspace }}
           AGENT_BASE_URL: ${{ vars.AGENT_BASE_URL }}
           AGENT_CARD_URL: ${{ vars.AGENT_CARD_URL }}
           TARGET_BASE_URL: ${{ vars.TARGET_BASE_URL }}
@@ -80,7 +86,7 @@ jobs:
           test ! -d generated-findings && exit 0
           while IFS= read -r -d '' test_file; do
             set +e
-            pytest -q "$test_file"
+            python -m pytest -q "$test_file"
             status=$?
             set -e
             if [ "$status" -eq 0 ]; then
