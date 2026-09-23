@@ -13,6 +13,7 @@ from typing import Dict, Any, Tuple, Optional, List
 from urllib.parse import urlparse, urlunparse
 from qdrant_client import QdrantClient, models
 import httpx 
+from agents.test_execution.test_quality import inspect_test_code
 from utils.agent_ontology import load_ontology, select_ontology_context
 from utils.object_store import ObjectStore
 from utils.test_types import resolve_test_type
@@ -584,6 +585,51 @@ class TestGenerationAgentLogic:
         self.llm_service = LLMServiceClient(LLM_PROVIDER_MODE, GEMINI_API_KEY)
         logger.info("Agent Logic initialized. RustFS and dynamic LLM service clients created.")
 
+    async def generate_quality_candidate(
+        self,
+        prompt: str,
+        captured_state: Dict[str, Any],
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Enforce deterministic suite quality before spending an Oracle review."""
+        skills = [skill for skill in captured_state.get("skills", []) if isinstance(skill, str)]
+        required_dimensions = {
+            skill: sorted({
+                dimension
+                for scenario in captured_state.get("scenarios", [])
+                if isinstance(scenario, dict) and scenario.get("skill_id") == skill
+                for dimension in scenario.get("required_dimensions", [])
+                if isinstance(dimension, str)
+            })
+            for skill in skills
+        }
+        candidate = ""
+        issues: list[dict[str, Any]] = []
+        candidate_prompt = prompt
+        for attempt in range(2):
+            candidate = (await self.llm_service.generate_code(candidate_prompt)).strip()
+            if candidate.startswith("```python"):
+                candidate = candidate.replace("```python", "").replace("```", "").strip()
+            issues = [
+                issue.as_dict()
+                for issue in inspect_test_code(
+                    candidate,
+                    skills,
+                    required_dimensions,
+                    require_semantic_names=bool(skills),
+                )
+            ]
+            if not issues:
+                return candidate, []
+            if attempt == 0:
+                candidate_prompt = f"""{prompt}
+
+DETERMINISTIC PRE-ORACLE QUALITY GATE FAILED.
+Regenerate the complete suite and correct every violation below. Do not delete intended coverage,
+weaken assertions, or add undeclared behavior. Return Python source only.
+{json.dumps(issues, default=str)}
+"""
+        return candidate, issues
+
     async def init_db_pool(self):
         """
         Initializes the asynchronous PostgreSQL connection pool.
@@ -1047,11 +1093,19 @@ class TestGenerationAgentLogic:
             The response must be *only* the Python code block.
             """
 
-            test_code = await self.llm_service.generate_code(full_prompt)
-            
-            # Simple check to strip any surrounding markdown, common in LLM responses
-            if test_code.strip().startswith("```python"):
-                test_code = test_code.strip().replace("```python", "").replace("```", "").strip()
+            test_code, quality_issues = await self.generate_quality_candidate(full_prompt, captured_state)
+            if quality_issues:
+                details = "; ".join(issue["message"] for issue in quality_issues)
+                return {
+                    "test_code": f"# Error: Generated suite failed deterministic quality gate after regeneration: {details}",
+                    "artifact_version_used": version_id,
+                    "grounding": {
+                        "rag_version_id": version_id,
+                        "product_context": product_context_chunks,
+                        "ontology_context": ontology_records,
+                        "quality_issues": quality_issues,
+                    },
+                }
 
             return {
                 "test_code": test_code,
