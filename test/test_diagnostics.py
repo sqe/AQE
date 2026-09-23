@@ -71,6 +71,41 @@ def test_configured_fleet_card_is_allowed_without_duplicate_host_allowlist(monke
     assert result["status"] == "healthy"
 
 
+def test_model_provider_probe_returns_sanitized_generation_health(monkeypatch):
+    class ProviderResponse(FakeResponse):
+        def json(self):
+            return {
+                "status": "UP",
+                "llm_provider": {
+                    "mode": "GEMINI",
+                    "configured": True,
+                    "status": "connected",
+                    "model": "gemini-2.5-flash",
+                    "latency_ms": 12.5,
+                },
+            }
+
+    class ProviderClient(FakeClient):
+        async def get(self, _):
+            return ProviderResponse()
+
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **_: ProviderClient())
+
+    result = asyncio.run(agent.probe_model_provider())
+
+    assert result["mode"] == "GEMINI"
+    assert result["status"] == "connected"
+    assert "key" not in result
+
+
+def test_model_provider_probe_fails_closed_when_health_omits_provider(monkeypatch):
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda **_: FakeClient())
+
+    result = asyncio.run(agent.probe_model_provider())
+
+    assert result == {"mode": "UNKNOWN", "configured": False, "status": "unavailable"}
+
+
 def test_generated_test_event_adds_graph_node():
     agent.GRAPH_EVENTS.clear()
 

@@ -10,7 +10,7 @@ import json
 import datetime
 import uuid
 from typing import Dict, Any, Tuple, Optional, List
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from qdrant_client import QdrantClient, models
 import httpx 
 from utils.agent_ontology import load_ontology, select_ontology_context
@@ -71,9 +71,59 @@ GRAPH_EVENT_TIMEOUT_SECONDS = float(os.environ.get("GRAPH_EVENT_TIMEOUT_SECONDS"
 EMBEDDING_DIMENSION = 384 
 
 # Gemini API Constants 
-GEMINI_EMBEDDING_MODEL = "text-embedding-004"
-GEMINI_GENERATION_MODEL = "gemini-2.5-flash-preview-05-20"
+GEMINI_EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "text-embedding-004")
+GEMINI_GENERATION_MODEL = os.environ.get("GEMINI_GENERATION_MODEL", "gemini-2.5-flash")
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+
+async def llm_provider_status(
+    *,
+    mode: str,
+    api_key: str,
+    generation_endpoint: str,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """Probe the configured provider without generating content or exposing credentials."""
+    normalized_mode = mode.upper()
+    if normalized_mode == "GEMINI":
+        configured = bool(api_key)
+        model = GEMINI_GENERATION_MODEL
+        url = f"{GEMINI_API_BASE_URL}/models/{model}?key={api_key}"
+    else:
+        normalized_mode = "SELF_HOSTED"
+        configured = bool(generation_endpoint)
+        model = LLM_GENERATION_MODEL or "provider-default"
+        parsed = urlparse(generation_endpoint)
+        path_prefix = parsed.path.partition("/v1/")[0]
+        url = urlunparse(parsed._replace(path=f"{path_prefix}/v1/models", query="", fragment=""))
+    if not configured:
+        return {"mode": normalized_mode, "configured": False, "status": "not_configured", "model": model}
+
+    started = asyncio.get_running_loop().time()
+    owns_client = client is None
+    probe_client = client or httpx.AsyncClient(timeout=10, follow_redirects=False)
+    try:
+        response = await probe_client.get(url)
+        response.raise_for_status()
+        return {
+            "mode": normalized_mode,
+            "configured": True,
+            "status": "connected",
+            "model": model,
+            "latency_ms": round((asyncio.get_running_loop().time() - started) * 1000, 2),
+        }
+    except httpx.HTTPError as exc:
+        status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        return {
+            "mode": normalized_mode,
+            "configured": True,
+            "status": "unreachable",
+            "model": model,
+            **({"http_status": status_code} if status_code is not None else {}),
+        }
+    finally:
+        if owns_client:
+            await probe_client.aclose()
 
 
 def resolve_target_identity(captured_state: Dict[str, Any]) -> str:
@@ -1047,7 +1097,12 @@ AGENT_LOGIC = TestGenerationAgentLogic()
 
 async def health_endpoint(request: Request):
     logger.debug("/health endpoint accessed.")
-    return JSONResponse({"status": "UP"}, status_code=200)
+    provider = await llm_provider_status(
+        mode=LLM_PROVIDER_MODE,
+        api_key=GEMINI_API_KEY,
+        generation_endpoint=LLM_GENERATION_ENDPOINT,
+    )
+    return JSONResponse({"status": "UP", "llm_provider": provider}, status_code=200)
 
 async def agent_card_endpoint(request: Request):
     logger.debug("/agent_card endpoint accessed.")
