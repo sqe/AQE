@@ -6,7 +6,7 @@ config:
   kafkaBootstrapServers: kafka.messaging.svc:9092
   temporalAddress: temporal-frontend.temporal.svc:7233
   registryUrl: http://platform-agentic-platform-registry.agentic-platform.svc:8001
-  githubSourceAllowedRepositories: sqe/platformrnd
+  githubSourceAllowedRepositories: sqe/platformrnd,sqe/AQE
 networkPolicy:
   enabled: true
   infrastructureNamespace: agentic-platform

@@ -39,6 +39,8 @@ images:
   byoa: ghcr.io/sqe/aqe-byoa:$tag
   reporting: ghcr.io/sqe/aqe-reporting:$tag
   frontend: ghcr.io/sqe/aqe-frontend:$tag
+config:
+  githubSourceEvaluationRef: $candidate_sha
 EOF
 
 helm upgrade --install "$release" deploy/helm/aqe \

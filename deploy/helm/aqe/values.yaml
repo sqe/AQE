@@ -38,6 +38,8 @@ config:
   agentEndpoint: http://aqe-byoa:8009
   modelHealthUrl: ""
   githubSourceAllowedRepositories: ""
+  githubSourceEvaluationRepository: sqe/AQE
+  githubSourceEvaluationRef: ""
   agentProbeAllowedHosts: >-
     aqe-agent-builder,aqe-artifact-management,aqe-change-detection,aqe-dbt-builder,aqe-diagnostics,aqe-github-analysis,aqe-github-connector,
     aqe-github-commit,aqe-knowledge-ingestion,aqe-quality-oracle,aqe-test-generation,aqe-test-execution,
