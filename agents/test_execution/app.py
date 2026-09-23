@@ -15,6 +15,7 @@ import resource
 import sys
 import tempfile
 import time
+import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,7 @@ REPAIR_LLM_MODEL = os.getenv("REPAIR_LLM_MODEL", "")
 REPAIR_LLM_API_KEY = os.getenv("REPAIR_LLM_API_KEY", "")
 TEST_EXECUTION_MODE = os.getenv("TEST_EXECUTION_MODE", "agent").lower()
 GRAPH_API_URL = os.getenv("GRAPH_API_URL", "http://aqe-diagnostics:8006/v1/graph/events")
+PUBLIC_BASE_URL = os.getenv("TEST_EXECUTION_PUBLIC_URL", "http://test_execution_agent:8003").rstrip("/")
 TEST_RUNS = Counter("aqe_test_runs_total", "Generated test runs", ("runner", "status"))
 TEST_RUN_DURATION = Histogram(
     "aqe_test_run_duration_seconds",
@@ -489,6 +491,7 @@ async def health(_: Request) -> JSONResponse:
 
 
 async def discovery(_: Request) -> JSONResponse:
+    passing = {"successful": True, "summary": {"tests": 1, "passed": 1, "failed": 0, "errors": 0}}
     return JSONResponse(
         {
             "name": "aqe",
@@ -497,11 +500,38 @@ async def discovery(_: Request) -> JSONResponse:
             "task_topic": "tasks.aqe",
             "result_topic": "results.aqe",
             "skills": [
-                {"id": "qe.validate", "description": f"Run generated {TEST_EXECUTION_MODE} tests in a bounded sandbox"},
-                {"id": "qe.repair", "description": "Diagnose, repair, and re-run failing tests"},
+                {"id": "qe.validate", "description": f"Run generated {TEST_EXECUTION_MODE} tests in a bounded sandbox", "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/run_tests"}},
+                {"id": "qe.repair", "description": "Diagnose, repair, and re-run failing tests", "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/run_tests"}},
             ],
+            "evaluation": {"cases": [
+                {"id": f"validate-{TEST_EXECUTION_MODE}-candidate", "skill_id": "qe.validate", "fixture": {"method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/fixtures/candidate", "body": {"outcome": "pass"}}, "prompt": {"task_id": {"from_fixture": "task_id"}, "repair": False}, "expected_response": passing, "required_dimensions": ["semantic_accuracy", "sandbox_execution", "mode_isolation"], "max_latency_ms": EXECUTION_TIMEOUT_SECONDS * 1000, "min_accuracy": 1.0},
+                {"id": f"repair-{TEST_EXECUTION_MODE}-candidate", "skill_id": "qe.repair", "fixture": {"method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/fixtures/candidate", "body": {"outcome": "pass"}}, "prompt": {"task_id": {"from_fixture": "task_id"}, "repair": True}, "expected_response": {**passing, "attempts": {"min_items": 1}, "repaired": False}, "required_dimensions": ["semantic_accuracy", "bounded_repair", "mode_isolation"], "max_latency_ms": EXECUTION_TIMEOUT_SECONDS * 1000, "min_accuracy": 1.0},
+            ]},
         }
     )
+
+
+async def candidate_fixture(request: Request) -> JSONResponse:
+    body = await request.json()
+    if body.get("outcome", "pass") != "pass":
+        return JSONResponse({"error": "outcome must be pass"}, status_code=400)
+    task_id = f"aqe-candidate-smoke-{uuid.uuid4().hex}"
+    object_path = f"artifacts/candidate-smoke/{task_id}/test_generated.py"
+    code = "def test_candidate_business_total():\n    assert sum([2, 3]) == 5\n"
+    await asyncio.to_thread(LOGIC.object_store.ensure_bucket)
+    await asyncio.to_thread(LOGIC.object_store.write_bytes, object_path, code.encode(), "text/x-python")
+    pool = await LOGIC._pool()
+    async with pool.acquire() as connection:
+        await connection.execute(
+            """INSERT INTO test_runs (task_id, app_id, status, object_path, raw_code,
+                   target_agent_id, target_agent_version, target_agent_skills,
+                   target_agent_profile, test_type)
+               VALUES ($1, $2, 'PENDING', $3, $4, $2, 'fixture-1', $5::jsonb, $6::jsonb, $7)""",
+            task_id, f"aqe-candidate-smoke-{TEST_EXECUTION_MODE}", object_path, code,
+            json.dumps([]), json.dumps({"fixture": True, "business_oracle": "2 + 3 equals 5"}),
+            TEST_EXECUTION_MODE,
+        )
+    return JSONResponse({"task_id": task_id, "test_type": TEST_EXECUTION_MODE, "object_path": object_path})
 
 
 async def run_tests(request: Request) -> JSONResponse:
@@ -568,7 +598,14 @@ def build_app() -> Any:
                 description="Execute a persisted test run",
                 tags=["qe", "pytest", TEST_EXECUTION_MODE],
                 examples=["validate task_id 123"],
-            )
+            ),
+            AgentSkill(
+                id="qe.repair",
+                name="Repair generated tests",
+                description="Run bounded diagnosis, repair, and re-execution for a persisted test",
+                tags=["qe", "pytest", "repair", TEST_EXECUTION_MODE],
+                examples=["repair task_id 123"],
+            ),
         ],
     )
     app = A2AStarletteApplication(
@@ -583,6 +620,7 @@ def build_app() -> Any:
             Route("/agent_card", discovery),
             Route("/.well-known/agent.json", discovery),
             Route("/run_tests", run_tests, methods=["POST"]),
+            Route("/v1/fixtures/candidate", candidate_fixture, methods=["POST"]),
             Route("/v1/findings/{task_id}/confirm", confirm_finding, methods=["POST"]),
         ]
     ):

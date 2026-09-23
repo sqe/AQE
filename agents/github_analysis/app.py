@@ -14,6 +14,9 @@ from observability.metrics import PrometheusMiddleware
 
 
 GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+PUBLIC_BASE_URL = os.getenv("GITHUB_ANALYSIS_PUBLIC_URL", "http://github_analysis_agent:8010").rstrip("/")
+EVALUATION_REPOSITORY = os.getenv("GITHUB_SOURCE_EVALUATION_REPOSITORY", "sqe/AQE")
+EVALUATION_REF = os.getenv("GITHUB_SOURCE_EVALUATION_REF", os.getenv("GIT_COMMIT_SHA", ""))
 MAX_SOURCE_FILES = int(os.getenv("GITHUB_SOURCE_MAX_FILES", "30"))
 MAX_SOURCE_BYTES = int(os.getenv("GITHUB_SOURCE_MAX_BYTES", "500000"))
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java"}
@@ -125,11 +128,29 @@ async def health() -> dict[str, str]:
 @app.get("/agent_card")
 @app.get("/.well-known/agent.json")
 async def agent_card() -> dict[str, Any]:
+    evaluation_ready = _allowed_repository(EVALUATION_REPOSITORY) and len(EVALUATION_REF) == 40 and all(
+        character in "0123456789abcdefABCDEF" for character in EVALUATION_REF
+    )
     return {
         "name": "github-source-analysis",
         "version": "1.0.0",
         "description": "Reads allowlisted agent source at a pinned GitHub ref and produces test evidence",
-        "skills": [{"id": "source.inspect", "description": "Find source-level defect candidates"}],
+        "status": "UP" if evaluation_ready else "DEGRADED",
+        "skills": [{
+            "id": "source.inspect",
+            "description": "Find source-level defect candidates",
+            "examples": [{"repository": EVALUATION_REPOSITORY, "ref": EVALUATION_REF, "paths": ["agents/github_analysis/app.py"]}],
+            "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/analyze"},
+        }],
+        "evaluation": {"cases": ([{
+            "id": "inspect-pinned-aqe-source",
+            "skill_id": "source.inspect",
+            "prompt": {"repository": EVALUATION_REPOSITORY, "ref": EVALUATION_REF, "paths": ["agents/github_analysis/app.py"]},
+            "expected_response": {"repository": EVALUATION_REPOSITORY, "ref": EVALUATION_REF, "classification": "candidate_source_findings", "files": "non-empty array", "findings": "array", "limits": {"max_files": MAX_SOURCE_FILES, "max_bytes": MAX_SOURCE_BYTES}},
+            "max_latency_ms": 60000,
+            "min_accuracy": 1.0,
+        }] if evaluation_ready else [])},
+        "recommendation": None if evaluation_ready else "Allowlist sqe/AQE and configure GITHUB_SOURCE_EVALUATION_REF with its immutable 40-character commit SHA.",
     }
 
 

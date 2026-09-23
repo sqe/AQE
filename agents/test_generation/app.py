@@ -69,6 +69,7 @@ LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "540"))
 LLM_REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "none")
 GRAPH_API_URL = os.environ.get("GRAPH_API_URL", "http://diagnostics_agent:8006/v1/graph/events")
 GRAPH_EVENT_TIMEOUT_SECONDS = float(os.environ.get("GRAPH_EVENT_TIMEOUT_SECONDS", "3"))
+PUBLIC_BASE_URL = os.environ.get("TEST_GENERATION_PUBLIC_URL", "http://test_generation_agent:8001").rstrip("/")
 EMBEDDING_DIMENSION = 384 
 
 # Gemini API Constants
@@ -1132,12 +1133,66 @@ async def health_endpoint(request: Request):
 async def agent_card_endpoint(request: Request):
     logger.debug("/agent_card endpoint accessed.")
     agent_id = os.environ.get("AGENT_ID", "TestGenerationAgent")
+    prompt = {
+        "url": "http://aqe-diagnostics:8006",
+        "agent_card_url": "http://aqe-diagnostics:8006/agent_card",
+        "test_type": "agent",
+        "agent_name": "aqe-diagnostics",
+        "agent_version": "2.0.0",
+        "skills": ["diagnostics.scan"],
+        "target_agent": {
+            "id": "aqe-diagnostics",
+            "version": "2.0.0",
+            "card_url": "http://aqe-diagnostics:8006/agent_card",
+            "skills": ["diagnostics.scan"],
+        },
+        "scenarios": [{
+            "scenario_id": "candidate-diagnostics-scan",
+            "skill_id": "diagnostics.scan",
+            "prompt": {},
+            "invocation": {
+                "protocol": "rest",
+                "method": "GET",
+                "url": "http://aqe-diagnostics:8006/v1/diagnostics",
+            },
+            "expected_response": {"status": "healthy or degraded", "agents": "array"},
+            "required_dimensions": ["positive", "protocol_schema", "latency", "semantic_accuracy"],
+            "max_latency_ms": 30000,
+            "min_accuracy": 1.0,
+        }],
+        "spec": "Generate atomic tests for the declared diagnostics.scan scenario only.",
+    }
     return JSONResponse(
         {
             "status": "UP",
             "agent_id": agent_id,
             "version": "1.0.0",
-            "skills": [{"id": "generate_tests"}],
+            "skills": [{
+                "id": "generate_tests",
+                "description": "Generate and persist a grounded candidate test suite",
+                "examples": [prompt],
+                "invocation": {
+                    "protocol": "rest",
+                    "method": "POST",
+                    "url": f"{PUBLIC_BASE_URL}/generate_test_plan",
+                },
+            }],
+            "evaluation": {"cases": [{
+                "id": "generate-candidate-diagnostics-suite",
+                "skill_id": "generate_tests",
+                "prompt": prompt,
+                "expected_response": {
+                    "status": "SUCCESS",
+                    "task_id": "non-empty string",
+                    "object_path": "non-empty RustFS artifact path",
+                    "test_type": "agent",
+                },
+                "required_dimensions": [
+                    "positive", "protocol_schema", "malformed_input", "latency", "semantic_accuracy"
+                ],
+                "max_latency_ms": int(LLM_TIMEOUT_SECONDS * 1000),
+                "min_accuracy": 1.0,
+            }]},
             "message": "Agent is healthy.",
         },
         status_code=200

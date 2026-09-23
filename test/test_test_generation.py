@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from agents.test_generation import app as test_generation
 
@@ -70,3 +71,18 @@ def test_gemini_retries_transient_service_failures(monkeypatch):
 
 async def _completed_sleep():
     return None
+
+
+def test_agent_card_declares_executable_generation_contract():
+    response = asyncio.run(test_generation.agent_card_endpoint(None))
+    card = json.loads(response.body)
+
+    assert (
+        card["skills"][0]["invocation"]["url"],
+        card["evaluation"]["cases"][0]["skill_id"],
+        card["evaluation"]["cases"][0]["expected_response"]["status"],
+    ) == (
+        f"{test_generation.PUBLIC_BASE_URL}/generate_test_plan",
+        "generate_tests",
+        "SUCCESS",
+    )

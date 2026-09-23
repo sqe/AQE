@@ -34,6 +34,7 @@ DEFAULT_AGENT_CARDS = {
     "quality-oracle": "http://quality_oracle_agent:8017/agent_card",
     "aqe-byoa": "http://aqe_byoa:8009/.well-known/agent.json",
 }
+PUBLIC_BASE_URL = os.getenv("DIAGNOSTICS_PUBLIC_URL", "http://diagnostics_agent:8008").rstrip("/")
 EXPECTED_INTERNAL_SKILLS = {
     "agent-builder": ["agent.build.experimental"],
     "artifact-management": ["upload_artifact"],
@@ -429,15 +430,21 @@ async def health() -> dict[str, str]:
 @app.get("/agent_card")
 @app.get("/.well-known/agent.json")
 async def agent_card() -> dict[str, Any]:
+    card_url = f"{PUBLIC_BASE_URL}/agent_card"
     return {
         "name": "aqe-diagnostics",
         "description": "Validates agent contracts and recommends safe recovery actions",
         "version": "2.0.0",
         "skills": [
-            {"id": "diagnostics.scan", "description": "Validate configured internal agents"},
-            {"id": "diagnostics.probe", "description": "Contract-test a known internal or external agent"},
-            {"id": "diagnostics.heal", "description": "Retry checks and return safe remediation recommendations"},
+            {"id": "diagnostics.scan", "description": "Validate configured internal agents", "examples": [{}], "invocation": {"protocol": "rest", "method": "GET", "url": f"{PUBLIC_BASE_URL}/v1/diagnostics"}},
+            {"id": "diagnostics.probe", "description": "Contract-test a known internal or external agent", "examples": [{"name": "aqe-diagnostics", "card_url": card_url, "expected_skills": ["diagnostics.scan", "diagnostics.probe", "diagnostics.heal"]}], "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/agent-probes"}},
+            {"id": "diagnostics.heal", "description": "Retry checks and return safe remediation recommendations", "examples": [{}], "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/diagnostics/heal"}},
         ],
+        "evaluation": {"cases": [
+            {"id": "scan-configured-fleet", "skill_id": "diagnostics.scan", "prompt": {}, "expected_response": {"status": "healthy or degraded", "healthy": "integer", "total": "integer", "agents": "array", "model_provider": "object"}, "max_latency_ms": 30000, "min_accuracy": 1.0},
+            {"id": "probe-diagnostics-card", "skill_id": "diagnostics.probe", "prompt": {"name": "aqe-diagnostics", "card_url": card_url, "expected_skills": ["diagnostics.scan", "diagnostics.probe", "diagnostics.heal"]}, "expected_response": {"status": "healthy", "identity": "aqe-diagnostics", "missing_skills": []}, "max_latency_ms": 10000, "min_accuracy": 1.0},
+            {"id": "retry-fleet-diagnostics-safely", "skill_id": "diagnostics.heal", "prompt": {}, "expected_response": {"status": "healthy or degraded", "action": "none or safe-retry", "agents": "array", "model_provider": "object"}, "max_latency_ms": 65000, "min_accuracy": 1.0},
+        ]},
     }
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from typing import Any
 
 import httpx
@@ -25,6 +26,7 @@ REQUIRE_INDEPENDENT_HIGH_IMPACT = os.getenv(
     "ORACLE_REQUIRE_INDEPENDENT_MODEL_FOR_HIGH_IMPACT", "true"
 ).lower() == "true"
 MAX_TEST_SOURCE_BYTES = int(os.getenv("ORACLE_MAX_TEST_SOURCE_BYTES", "200000"))
+PUBLIC_BASE_URL = os.getenv("QUALITY_ORACLE_PUBLIC_URL", "http://quality_oracle:8017").rstrip("/")
 
 REVIEWS = Counter("aqe_oracle_reviews_total", "Generated-test oracle decisions", ("decision", "risk"))
 REVIEW_DURATION = Histogram("aqe_oracle_review_duration_seconds", "Quality Oracle review duration")
@@ -287,7 +289,25 @@ async def agent_card() -> dict[str, Any]:
         "status": "UP" if configured else "DEGRADED",
         "description": "Independently reviews generated tests using requirements, ontology, RAG memory, and risk policy",
         "ontology": {"archetype": "software_quality_engineering"},
-        "skills": [{"id": "oracle.review.generated_test", "description": "Fail-closed generated-test review"}],
+        "skills": [{
+            "id": "oracle.review.generated_test",
+            "description": "Fail-closed generated-test review",
+            "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/reviews"},
+        }],
+        "evaluation": {"cases": [{
+            "id": "review-grounded-candidate",
+            "skill_id": "oracle.review.generated_test",
+            "fixture": {"method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/fixtures/candidate"},
+            "prompt": {"from_fixture": "review_request"},
+            "expected_response": {
+                "status": "APPROVED",
+                "task_id": {"prefix": "aqe-candidate-smoke-"},
+                "evidence_citations": {"min_items": 1},
+            },
+            "required_dimensions": ["semantic_accuracy", "fail_closed", "grounding"],
+            "max_latency_ms": int(TIMEOUT_SECONDS * 1000),
+            "min_accuracy": 1.0,
+        }]},
         "high_impact_ready": independent,
         "recommendation": None if configured else "Configure an oracle or generation model endpoint.",
     }
@@ -296,6 +316,37 @@ async def agent_card() -> dict[str, Any]:
 @app.post("/v1/reviews")
 async def review(request: dict[str, Any]) -> dict[str, Any]:
     return await review_generated_test(request)
+
+
+@app.post("/v1/fixtures/candidate")
+async def candidate_fixture() -> dict[str, Any]:
+    """Persist one isolated, bounded suite which must be semantically reviewed."""
+    task_id = f"aqe-candidate-smoke-{uuid.uuid4().hex}"
+    object_path = f"artifacts/candidate-smoke/{task_id}/test_generated.py"
+    source = (
+        "def normalize_order_total(cents: int) -> str:\n"
+        "    return f'${cents / 100:.2f}'\n\n"
+        "def test_order_total_is_rendered_in_dollars():\n"
+        "    assert normalize_order_total(1234) == '$12.34'\n"
+    )
+    store = ObjectStore()
+    await asyncio.to_thread(store.ensure_bucket)
+    await asyncio.to_thread(store.write_bytes, object_path, source.encode(), "text/x-python")
+    return {"task_id": task_id, "object_path": object_path, "review_request": {
+        "task_id": task_id,
+        "object_path": object_path,
+        "spec": "Order totals in integer cents are displayed as dollars with exactly two decimals.",
+        "test_type": "agent",
+        "skills": ["orders.total.display"],
+        "scenarios": [{
+            "id": "order-total-1234",
+            "skill_id": "orders.total.display",
+            "required_dimensions": ["positive"],
+            "expected_response": "$12.34",
+        }],
+        "refined_requirements": ["REQ-ORDER-TOTAL: 1234 cents renders as $12.34"],
+        "risk_labels": ["low"],
+    }}
 
 
 app = PrometheusMiddleware(app, "quality-oracle")

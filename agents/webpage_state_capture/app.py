@@ -33,6 +33,8 @@ logger = logging.getLogger("WebpageStateCaptureAgent")
 CACHE_EXPIRATION_SECONDS = 300 # Cache state for 5 minutes
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
+PUBLIC_BASE_URL = os.environ.get("WEBPAGE_CAPTURE_PUBLIC_URL", "http://webpage_state_capture_agent:8002").rstrip("/")
+AQE_FRONTEND_URL = os.environ.get("AQE_FRONTEND_URL", "http://aqe-frontend:8080/")
 
 
 # --- 1. Agent Logic (Pure Business Logic) ---
@@ -174,7 +176,20 @@ async def agent_card_endpoint(request):
             "status": "UP",
             "agent_id": agent_id,
             "version": "1.0.0",
-            "skills": [{"id": "capture_state"}],
+            "skills": [{
+                "id": "capture_state",
+                "description": "Capture interactive elements from the deployed AQE frontend",
+                "examples": [{"url": AQE_FRONTEND_URL}],
+                "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/capture"},
+            }],
+            "evaluation": {"cases": [{
+                "id": "capture-aqe-frontend",
+                "skill_id": "capture_state",
+                "prompt": {"url": AQE_FRONTEND_URL},
+                "expected_response": {"url": AQE_FRONTEND_URL, "status": "CAPTURED", "elements": "array"},
+                "max_latency_ms": 30000,
+                "min_accuracy": 1.0,
+            }]},
             "message": "Agent is healthy.",
         },
         status_code=200
@@ -223,7 +238,7 @@ if __name__ == '__main__':
         name='Capture Interactive Web Element State',
         description='Navigates to a URL, extracts interactive elements (buttons, inputs, links) using Playwright, and caches the result.',
         tags=['web', 'playwright', 'caching', 'state'],
-        examples=['capture_state url="https://example.com"'],
+        examples=[f'capture_state url="{AQE_FRONTEND_URL}"'],
     )
 
     agent_card = AgentCard(
