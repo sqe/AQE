@@ -1,0 +1,46 @@
+{
+  "finding_evidence": null,
+  "outcome": "validated",
+  "repaired": false,
+  "summary": {
+    "errors": 0,
+    "failed": 0,
+    "passed": 24,
+    "skipped": 0,
+    "tests": 24
+  },
+  "target_agent": {
+    "card_url": "http://aqe-github-connector:8014/agent_card",
+    "id": "aqe-github-connector",
+    "ontology_profile": {
+      "agent_archetype": "retrieval_research",
+      "generation_fingerprint": "5b1bfa7765849faec92841352c75949e0de9dceeaf24b78fb6429e4aedf0413c",
+      "generation_policy_version": "agent-suite-v5",
+      "skill_test_dimensions": {
+        "github.tools.call": [
+          "latency",
+          "malformed_input",
+          "positive",
+          "protocol_schema",
+          "semantic_accuracy"
+        ],
+        "github.tools.list": [
+          "latency",
+          "positive",
+          "protocol_schema",
+          "semantic_accuracy"
+        ]
+      },
+      "source_repository": "",
+      "source_revision": null
+    },
+    "skills": [
+      "github.tools.call",
+      "github.tools.list"
+    ],
+    "test_catalog": null,
+    "test_type": "agent",
+    "version": "1.0.0"
+  },
+  "task_id": "a0c3420b-dda7-4653-9c7e-fcd1f080c538"
+}
