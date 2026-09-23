@@ -56,6 +56,7 @@ COLLECTION_NAME = "product_knowledge"
 # Default mode is 'SELF_HOSTED', fallback for Gemini.
 LLM_PROVIDER_MODE = os.environ.get("LLM_PROVIDER_MODE", "SELF_HOSTED").upper()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MAX_ATTEMPTS = int(os.environ.get("GEMINI_MAX_ATTEMPTS", "3"))
 
 # Self-Hosted/LM Studio Endpoints (Only used if LLM_PROVIDER_MODE is 'SELF_HOSTED')
 LLM_EMBEDDING_ENDPOINT = os.environ.get("LLM_EMBEDDING_ENDPOINT", "")
@@ -72,7 +73,7 @@ EMBEDDING_DIMENSION = 384
 
 # Gemini API Constants
 GEMINI_EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001").removeprefix("models/")
-GEMINI_GENERATION_MODEL = os.environ.get("GEMINI_GENERATION_MODEL", "gemini-2.5-flash")
+GEMINI_GENERATION_MODEL = os.environ.get("GEMINI_GENERATION_MODEL", "gemini-3.6-flash")
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
@@ -453,6 +454,28 @@ class LLMServiceClient:
         """Closes the underlying httpx client connection pool."""
         await self.client.aclose()
 
+    async def _post_gemini(self, url: str, payload: dict[str, Any]) -> httpx.Response:
+        """Retry transient Gemini throttling and service failures within the activity deadline."""
+        for attempt in range(GEMINI_MAX_ATTEMPTS):
+            response = await self.client.post(
+                url,
+                json=payload,
+                headers={"x-goog-api-key": self.api_key},
+            )
+            if response.status_code not in {429, 500, 502, 503, 504} or attempt + 1 == GEMINI_MAX_ATTEMPTS:
+                return response
+            retry_after = response.headers.get("retry-after")
+            delay = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() else 2**attempt
+            logger.warning(
+                "Gemini returned HTTP %s; retrying in %.1fs (%s/%s)",
+                response.status_code,
+                delay,
+                attempt + 1,
+                GEMINI_MAX_ATTEMPTS,
+            )
+            await asyncio.sleep(min(delay, 10))
+        raise RuntimeError("unreachable")
+
     async def get_embedding(self, text: str) -> List[float]:
         """Calls the configured embedding model asynchronously."""
         if self.mode == 'GEMINI':
@@ -464,7 +487,7 @@ class LLMServiceClient:
             }
             
             try:
-                response = await self.client.post(url, json=payload, headers={"x-goog-api-key": self.api_key})
+                response = await self._post_gemini(url, payload)
                 response.raise_for_status()
                 return response.json()['embedding']['values']
             except Exception as e:
@@ -505,7 +528,7 @@ class LLMServiceClient:
             }
             
             try:
-                response = await self.client.post(url, json=payload, headers={"x-goog-api-key": self.api_key})
+                response = await self._post_gemini(url, payload)
                 response.raise_for_status()
                 candidate = response.json().get('candidates', [{}])[0]
                 return candidate.get('content', {}).get('parts', [{}])[0].get('text', "# Gemini generation failed.")
