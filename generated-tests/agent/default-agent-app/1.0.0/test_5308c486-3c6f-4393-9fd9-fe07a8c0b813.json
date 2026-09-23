@@ -1,0 +1,21 @@
+{
+  "finding_evidence": null,
+  "outcome": "validated",
+  "repaired": false,
+  "summary": {
+    "errors": 0,
+    "failed": 0,
+    "passed": 5,
+    "skipped": 0,
+    "tests": 5
+  },
+  "target_agent": {
+    "card_url": "http://aqe-artifact-management:8007/agent_card",
+    "id": "default-agent-app",
+    "ontology_profile": "{}",
+    "skills": "[]",
+    "test_type": "agent",
+    "version": "1.0.0"
+  },
+  "task_id": "5308c486-3c6f-4393-9fd9-fe07a8c0b813"
+}
