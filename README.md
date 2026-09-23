@@ -467,6 +467,15 @@ to the correct HTTP or browser executor.
 
 ## CI/CD and Argo CD
 
+In short: PRs run path-correlated checks, `main` builds immutable `sha-*`
+candidates, Autopilot qualifies the exact deployed SHA, and approved promotion
+retags those same images as `vX.Y.Z` without rebuilding them. Validated generated
+tests live on `aqe-generated-tests`, not normally on `main`; release promotion
+links their catalog commits back to the qualifying fleet result and requires the
+catalog branch to be green. See
+[`docs/production-release.md`](docs/production-release.md#release-in-one-minute)
+for the simple flow and the deeper operational procedure.
+
 - `.github/workflows/ci.yml`: validates PRs, synthetic merge-queue integration
   commits, and protected `main`; automatic docs, config, and code lanes keep
   lightweight changes fast while code/refactor changes retain compile, unit,

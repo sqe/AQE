@@ -5,6 +5,35 @@ branch and must remain releasable. Production promotion is tag-driven; AQE
 releases immutable multi-architecture images to GHCR and a Helm chart through
 GitHub Actions.
 
+## Release in one minute
+
+An artifact is a built image or Helm chart. Promotion means assigning a verified
+artifact a release version and moving it toward production; AQE does not rebuild
+the artifact during promotion.
+
+1. A pull request runs checks selected from its changed paths. Documentation gets
+   fast validation; code gets unit, contract, affected-image, and applicable E2E
+   checks. A PR cannot use a label to request less coverage.
+2. After merge, `main` builds every image once and publishes immutable
+   `sha-<commit>` candidates.
+3. The exact SHA candidate is deployed to a disposable or staging environment.
+   Autopilot discovers contracts, generates tests, obtains Oracle approval, and
+   executes the tests against that candidate.
+4. Passing generated tests are committed to `aqe-generated-tests`, whose own CI
+   reruns them. Failed or unapproved tests remain operational evidence and are
+   not promoted into the catalog.
+5. Release promotion verifies the deployed SHA, successful fleet result, catalog
+   commits, and catalog CI. Approval creates `vX.Y.Z`; the tag workflow aliases
+   the already-built SHA images instead of rebuilding them.
+6. Production GitOps pins the verified image tags or digests and Argo CD applies
+   the reviewed change.
+
+The generated-test catalog is intentionally separate from `main`. Pull requests
+test source changes, while the catalog branch continuously tests validated suites
+against their declared agent and version. A release joins both evidence chains:
+the source SHA identifies the deployed images, and the fleet result identifies
+the generated-test commits produced while qualifying that candidate.
+
 ```mermaid
 flowchart LR
     A[Feature PR] --> B[Path-aware PR checks]
@@ -40,6 +69,28 @@ Live evaluation defaults to two concurrent shards and can be tuned with the
 jobs; expensive model and E2E work stays behind the merge queue, schedule, or
 release tag. Raise these limits only after measuring registry, runner, cluster,
 and model-endpoint saturation.
+
+## How tests correlate to a change or build
+
+AQE uses two independent selectors rather than running every test for every
+event:
+
+| Event | Correlation key | What runs |
+|---|---|---|
+| Pull request | Files changed from the PR base | The lane and image matrix selected by `.github/scripts/ci-matrix.py`; runtime E2E runs when runtime-owned paths change |
+| Merge queue | Synthetic combined commit | The same path-aware checks against the exact batch proposed for `main` |
+| Push to `main` | Full Git commit SHA | All multi-architecture images are built and published as `sha-<commit>` |
+| Autopilot qualification | Deployed SHA plus fleet workflow result | Discovered contract scenarios are generated, reviewed, and executed against the candidate services |
+| Generated catalog push | Agent identity, version, runtime, layer, and suite metadata | Versioned tests on `aqe-generated-tests` rerun against their configured target |
+| SemVer promotion | Candidate SHA plus successful fleet and catalog commit IDs | Existing SHA manifests receive the version tag after approval and GA gates |
+
+Path selection is a speed optimization, not a release shortcut. Shared runtime,
+dependency, workflow, or utility changes widen the image matrix; merge-queue and
+release gates protect interactions that a single PR cannot prove in isolation.
+Generated tests are correlated through immutable evidence rather than copied to
+`main`: each successful fleet child returns its catalog commit, and promotion
+requires every returned commit to be an ancestor of the current green catalog
+head.
 
 ## Verification lanes
 
