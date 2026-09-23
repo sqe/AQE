@@ -33,6 +33,29 @@ def verify_model(payload: dict) -> None:
         raise SystemExit(f"generation model is not connected: {provider}")
 
 
+def verify_contracts(payload: dict) -> None:
+    summary = payload.get("summary") or {}
+    discovered = summary.get("discovered", 0)
+    testable = summary.get("testable_scenarios", 0)
+    executable = summary.get("executable_scenarios", 0)
+    missing_execution = summary.get("missing_execution_contracts", 0)
+    missing_oracles = summary.get("missing_oracles", 0)
+    if (
+        payload.get("status") != "completed"
+        or discovered < 1
+        or testable < 1
+        or executable != testable
+        or missing_execution
+        or missing_oracles
+    ):
+        raise SystemExit(
+            "fleet contracts are incomplete: "
+            f"status={payload.get('status')}, discovered={discovered}, "
+            f"executable={executable}/{testable}, missing_execution={missing_execution}, "
+            f"missing_oracles={missing_oracles}"
+        )
+
+
 def verify_fleet(payload: dict) -> None:
     if payload.get("status") != "COMPLETED":
         raise SystemExit(f"fleet workflow is not completed: {payload.get('status')}")
@@ -70,6 +93,8 @@ def main() -> None:
         verify_deployments(payload, rest[0])
     elif mode == "model":
         verify_model(payload)
+    elif mode == "contracts":
+        verify_contracts(payload)
     elif mode == "fleet":
         verify_fleet(payload)
     elif mode == "catalog-commits":
