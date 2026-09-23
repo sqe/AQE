@@ -33,3 +33,7 @@ result="$(curl --fail --silent http://localhost:8003/run_tests \
 python3 -c 'import json,sys; result=json.load(sys.stdin); assert result["successful"] is True' <<<"$result"
 "${compose[@]}" exec -T postgres psql -U user -d qe_db -tAc \
   "SELECT status FROM test_runs WHERE task_id = '$task_id'" | grep -qx PASSED
+
+metrics="$(curl --fail --silent http://localhost:8003/metrics)"
+grep -q '^aqe_test_runs_total' <<<"$metrics"
+grep -q '^aqe_test_run_duration_seconds' <<<"$metrics"

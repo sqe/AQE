@@ -36,6 +36,7 @@ KAFKA_BROKER = os.environ.get('KAFKA_BROKER', 'kafka:9092')
 TOPIC_TASK_COMMIT = 'qe.task.commit' 
 GITHUB_TOKEN = os.environ.get("GITHUB_PAT")
 TEST_FILE_PATH = "generated_tests/qe_test.py" # Standard location in the repository
+PUBLIC_BASE_URL = os.environ.get("GITHUB_COMMIT_PUBLIC_URL", "http://aqe-github-commit:8011").rstrip("/")
 
 
 # --- 1. Agent Logic (Pure Business Logic) ---
@@ -203,7 +204,34 @@ async def agent_card_endpoint(request: Request):
             "status": "UP" if GITHUB_TOKEN else "DEGRADED",
             "agent_id": agent_id,
             "version": "1.0.0",
-            "skills": [{"id": "start_commit_consumer"}],
+            "skills": [
+                {
+                    "id": "start_commit_consumer",
+                    "description": "Idempotently ensure the Kafka commit consumer is running",
+                    "examples": ["start commit listener"],
+                    "invocation": {
+                        "protocol": "a2a_jsonrpc",
+                        "url": f"{PUBLIC_BASE_URL}/",
+                        "method": "tasks.execute",
+                    },
+                }
+            ],
+            "evaluation": {
+                "cases": [
+                    {
+                        "id": "start-consumer-idempotently",
+                        "skill_id": "start_commit_consumer",
+                        "prompt": "start commit listener",
+                        "expected_response": {
+                            "contains": "consumer started successfully",
+                            "side_effect": "at most one Kafka consumer task is active",
+                        },
+                        "required_dimensions": ["idempotency", "cancellation"],
+                        "max_latency_ms": 5000,
+                        "min_accuracy": 1.0,
+                    }
+                ]
+            },
             "message": "Agent is healthy." if GITHUB_TOKEN else "GITHUB_PAT is not configured.",
         },
         status_code=200

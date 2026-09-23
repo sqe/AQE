@@ -23,6 +23,7 @@ from utils.object_store import ObjectStore
 
 GENERATION_ENDPOINT = os.getenv("LLM_GENERATION_ENDPOINT", "")
 GENERATION_MODEL = os.getenv("LLM_GENERATION_MODEL", "")
+PUBLIC_BASE_URL = os.getenv("DBT_BUILDER_PUBLIC_URL", "http://dbt_builder_agent:8016").rstrip("/")
 MISSIONS = Counter("aqe_dbt_missions_total", "dbt blueprint missions", ("status",))
 MISSION_DURATION = Histogram("aqe_dbt_mission_duration_seconds", "dbt blueprint duration")
 REQUIRED_PATHS = {"dbt_project.yml", "models/sources.yml", "models/schema.yml", "README.md"}
@@ -168,15 +169,58 @@ async def health() -> dict[str, str]:
 @app.get("/agent_card")
 @app.get("/.well-known/agent.json")
 async def agent_card() -> dict[str, Any]:
+    sample_project = {
+        "dbt_project.yml": "name: aqe_analytics\nversion: 1.0.0\nprofile: aqe_generated\n",
+        "models/sources.yml": "version: 2\nsources:\n  - name: raw\n    tables:\n      - name: orders\n",
+        "models/schema.yml": "version: 2\nmodels:\n  - name: fct_orders\n    columns:\n      - name: id\n        tests: [unique, not_null]\n",
+        "models/staging/stg_orders.sql": "select id from {{ source('raw', 'orders') }}",
+        "models/intermediate/int_orders.sql": "select * from {{ ref('stg_orders') }}",
+        "models/marts/fct_orders.sql": "select * from {{ ref('int_orders') }}",
+        "README.md": "# AQE analytics\n",
+    }
     return {
         "name": "aqe-dbt-builder",
         "version": "0.1.0",
         "status": "UP" if GENERATION_ENDPOINT else "DEGRADED",
         "description": "Review-only dbt medallion analytics project blueprint",
         "skills": [
-            {"id": "dbt.blueprint.build", "description": "Build staging, intermediate, and mart models"},
-            {"id": "dbt.project.validate", "description": "Validate SQL, YAML, docs, and data-test coverage"},
+            {
+                "id": "dbt.blueprint.build",
+                "description": "Build staging, intermediate, and mart models",
+                "examples": ["Build an orders analytics project without deploying it"],
+                "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/missions"},
+            },
+            {
+                "id": "dbt.project.validate",
+                "description": "Validate SQL, YAML, docs, and data-test coverage",
+                "examples": ["Validate this review-only dbt project"],
+                "invocation": {"protocol": "rest", "method": "POST", "url": f"{PUBLIC_BASE_URL}/v1/projects/validate"},
+            },
         ],
+        "evaluation": {
+            "cases": [
+                {
+                    "id": "build-orders-project",
+                    "skill_id": "dbt.blueprint.build",
+                    "prompt": {
+                        "goals": "Create documented order metrics",
+                        "sources": [{"name": "raw.orders", "columns": ["id", "status"]}],
+                        "dialect": "snowflake",
+                    },
+                    "expected_response": {"status": "REVIEW_REQUIRED", "deployment_allowed": False},
+                    "max_latency_ms": 600000,
+                    "min_accuracy": 1.0,
+                },
+                {
+                    "id": "validate-orders-project",
+                    "skill_id": "dbt.project.validate",
+                    "prompt": {"files": sample_project, "dialect": "snowflake"},
+                    "expected_response": {"status": "VALID", "validation_errors": []},
+                    "max_latency_ms": 1000,
+                    "min_accuracy": 1.0,
+                },
+            ]
+        },
         "recommendation": None if GENERATION_ENDPOINT else "Configure the generation model endpoint.",
     }
 
@@ -188,6 +232,15 @@ async def mission(request: dict[str, Any]) -> dict[str, Any]:
     except httpx.HTTPError as exc:
         MISSIONS.labels("failed").inc()
         raise HTTPException(status_code=502, detail=f"model request failed: {exc}") from exc
+
+
+@app.post("/v1/projects/validate")
+async def project_validation(request: dict[str, Any]) -> dict[str, Any]:
+    files = request.get("files")
+    if not isinstance(files, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in files.items()):
+        raise HTTPException(status_code=400, detail="files must be a string-to-string object")
+    errors = validate_project(files, str(request.get("dialect", "snowflake")))
+    return {"status": "VALID" if not errors else "INVALID", "validation_errors": errors}
 
 
 app = PrometheusMiddleware(app, "dbt-builder")

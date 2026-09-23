@@ -1,30 +1,83 @@
 # Production release
 
-AQE releases immutable multi-architecture images to GHCR and a Helm chart as a
-GitHub Actions artifact. Production promotion is tag-driven.
+AQE uses trunk-based development: the protected `main` branch is the integration
+branch and must remain releasable. Production promotion is tag-driven; AQE
+releases immutable multi-architecture images to GHCR and a Helm chart through
+GitHub Actions.
 
 ```mermaid
 flowchart LR
-    A[Engineer PR] --> B[Path-aware CI]
-    B --> C{CI / ci-gate}
-    C -->|failed| A
-    C -->|passed| D[Merge queue when enabled]
-    D --> E[merge_group validation]
-    E -->|passed| F[Protected main]
-    E -->|failed| A
+    A[Feature PR] --> B[Path-aware PR checks]
+    B --> C[Merge queue]
+    C --> D[Temporary merge_group commit]
+    D --> E[Full integration gate]
+    E --> F[Protected main]
+    F --> G[Immutable SHA candidate]
+    G --> H[Development environment]
+    F --> I[SemVer tag]
+    I --> J[GA artifacts + production promotion]
 ```
 
-Superseded runs on the same PR are cancelled. The stable gate aggregates unit,
-evaluation, Helm/Argo CD, affected-image, and runtime E2E checks; docs-only PRs
-do not consume 14 image builders or a full E2E environment. CI handles the
-`merge_group` event so a GitHub merge queue can validate combined changes
-without forcing hundreds of authors to continually rebase against a busy
-`main` branch. If the repository plan does not expose merge queues, retain the
-protected squash-only PR flow and enable the queue when it becomes available.
+Superseded runs on the same PR are cancelled. Each GitHub-hosted job is isolated;
+do not point PR tests at a shared mutable AQE environment. The stable gate
+aggregates unit, evaluation, Helm/Argo CD, affected-image, and runtime E2E
+checks. Docs-only PRs do not consume every image builder or a full E2E
+environment. For cluster-level preview tests, create one namespace per PR
+(`aqe-pr-<number>`) and delete it when the PR closes.
 
-1. Open a pull request to `main`; obtain approval and a green **CI / ci-gate**.
-2. After merge, confirm the `main` **Build and publish** run succeeds.
-3. Create an annotated SemVer tag from the verified commit and push it:
+CI handles `merge_group`, allowing a merge queue to validate the exact combined
+commit without forcing hundreds of authors to continually rebase. Configure
+queue concurrency to match runner and model capacity; queueing 1,000 PRs is
+safe, launching 1,000 simultaneous model evaluations is not. If the GitHub plan
+does not expose merge queues, retain protected squash-only PRs and require
+branches to be current before merge.
+
+Image matrices are path-selected and bounded to six parallel builds per run.
+Live evaluation defaults to two concurrent shards and can be tuned with the
+`EVAL_MAX_PARALLEL` repository variable. GitHub-hosted capacity absorbs short
+jobs; expensive model and E2E work stays behind the merge queue, schedule, or
+release tag. Raise these limits only after measuring registry, runner, cluster,
+and model-endpoint saturation.
+
+## Verification lanes
+
+CI derives the lane from changed paths; a PR label cannot downgrade required
+coverage.
+
+| Lane | Typical changes | Required verification |
+|---|---|---|
+| Docs | `README.md`, `docs/`, templates | Whitespace, policy-script, and YAML validation |
+| Config | Helm, Argo CD, Compose | Fast validation plus Helm rendering and deployment-policy checks |
+| Code | Features, fixes, refactors, dependencies, workflows | Unit and golden evaluation, contracts, affected images, and runtime E2E when applicable |
+
+Refactors use the code lane because “no intended behavior change” requires more
+regression evidence, not less. Features and fixes must carry unit tests and
+contract or integration coverage for every changed public boundary. The pull
+request template records the change type, affected target, rollback, contract
+impact, and verification evidence.
+
+## One-time repository setup
+
+In **Settings → Branches / Rulesets**, protect `main`: require pull requests,
+**CI / ci-gate**, merge queue, current branches, and conversation resolution;
+block force-pushes and deletion. Keep `main` as the default PR target. Use
+CODEOWNERS approval when eligible reviewers exist; until then, do not configure
+an impossible reviewer count.
+
+The `merge_group` ref is the disposable integration branch. It tests the exact
+batch GitHub intends to merge, then disappears. This avoids a permanent
+`develop` branch, duplicate release PRs, back-merges, and environment drift.
+Development Argo CD may follow immutable `sha-*` candidates from `main`; staging
+may use `vX.Y.Z-rc.N`; production only accepts a final `vX.Y.Z` digest.
+
+## Release procedure
+
+1. Queue a feature PR only after its required checks pass. The queue reruns
+   **CI / ci-gate** on the synthetic integration commit before merging to `main`.
+2. Confirm the resulting `main` **Build and publish** run succeeds and its
+   immutable SHA images pass development smoke tests.
+3. Optionally create `vX.Y.Z-rc.N` from that commit for a staging soak.
+4. Create the final annotated SemVer tag from the verified commit and push it:
 
    ```bash
    git switch main && git pull --ff-only
@@ -32,24 +85,76 @@ protected squash-only PR flow and enable the queue when it becomes available.
    git push origin vX.Y.Z
    ```
 
-4. The tag workflow creates a GitHub Release containing the Helm chart and
-   checksum only after all ten golden-evaluation shards pass. Download the ten
+5. The tag workflow rejects tags not reachable from `main`, then creates a
+   GitHub Release containing the Helm chart and
+   checksum only after all ten live model-evaluation shards and the disposable
+   Compose integration/telemetry environment pass. Offline dataset validation
+   is useful in ordinary CI but cannot satisfy the GA model gate. Download the ten
    `model-evaluation-shard-*` artifacts, verify SBOM/provenance attestations and
    both `linux/amd64` and `linux/arm64` image manifests. Promote Argo CD values
    by immutable tag or digest; never promote `main`.
-5. Confirm Argo CD sync, preflight, Agent Card validation, ontology ingestion,
+6. Confirm Argo CD sync, preflight, Agent Card validation, ontology ingestion,
    golden evaluation, metrics, and one agent plus one website smoke journey.
-6. Roll back by restoring the previous image digests in Git and letting Argo CD
+7. Roll back by restoring the previous image digests in Git and letting Argo CD
    reconcile. Preserve PostgreSQL/RustFS evidence and open an incident issue.
+
+Configure `RELEASE_SLACK_WEBHOOK_URL` as a GitHub Actions secret to publish the
+final GA, live-model, integration, image, and chart results to the release
+channel. Absence of the optional webhook does not weaken a release gate; GitHub
+remains authoritative. Treat notification delivery as an operational SLI and
+alert on repeated failures.
+
+Track at least deployment success rate, change failure rate, rollback time,
+escaped defects, test duration, flaky-test rate, model score, model latency, and
+agent-test pass rate. Set SLOs from measured baselines, review them regularly,
+and move slow suites behind affected-path or merge-queue boundaries rather than
+allowing engineers to bypass deterministic checks.
+
+## Blue/green promotion
+
+Run blue and green as separate Helm releases/namespaces with different Temporal
+task queues. Sharing `aqe-workflows` would let old and new workers consume each
+other's tasks, so the chart exposes `config.temporalTaskQueue` for slot isolation.
+
+```mermaid
+flowchart LR
+    U[Gateway / user traffic] --> B[Blue namespace\nactive digest]
+    G[Green namespace\ncandidate digest] --> V[Preflight + cards + E2E + golden smoke]
+    V -->|pass| S[GitOps route switch]
+    S --> G
+    S -. retained rollback .-> B
+    B --> D[(Shared PostgreSQL / RustFS)]
+    G --> D
+    B --> TB[Temporal queue: aqe-blue]
+    G --> TG[Temporal queue: aqe-green]
+```
+
+Install the candidate with immutable digests, validate it directly, then change
+the platform Gateway/HTTPRoute backend in Git from blue to green. Do not switch
+traffic by changing pod labels imperatively. Keep blue running for the rollback
+window, and require backward-compatible database migrations while both slots
+exist. A failed check leaves the route on blue; rollback is the inverse Git
+route change. Example slot installs:
+
+```bash
+IMMUTABLE_VALUES=/secure/path/aqe-vX.Y.Z-digests.yaml
+helm upgrade --install aqe-blue deploy/helm/aqe -n aqe-blue --create-namespace \
+  -f deploy/helm/aqe/values-agentic-platform.yaml -f "$IMMUTABLE_VALUES" \
+  --set config.temporalTaskQueue=aqe-blue
+helm upgrade --install aqe-green deploy/helm/aqe -n aqe-green --create-namespace \
+  -f deploy/helm/aqe/values-agentic-platform.yaml -f "$IMMUTABLE_VALUES" \
+  --set config.temporalTaskQueue=aqe-green
+```
 
 ```mermaid
 flowchart TD
-    A[Protected main commit] --> B[Build and publish]
-    B --> C[Verify main images]
-    C --> D[Annotated SemVer tag]
-    D --> E[10-shard golden evaluation]
-    E --> F[Multi-arch images + SBOM + provenance]
-    F --> P[Git digest promotion]
+    A[Merge queue integration gate] --> B[Protected main commit]
+    B --> C[Build SHA candidates]
+    C --> D[Verify main images]
+    D --> E[Annotated SemVer tag]
+    E --> F[10-shard golden evaluation]
+    F --> X[Multi-arch images + SBOM + provenance]
+    X --> P[Git digest promotion]
     P --> G[Argo CD sync]
     G --> H[Preflight + agent validation + ontology]
     H --> I[Production smoke and metrics]

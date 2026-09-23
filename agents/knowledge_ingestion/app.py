@@ -354,6 +354,76 @@ class LLMFineTuningAgentLogic:
             logger.error(f"Agent ontology ingestion failed: {e}", exc_info=True)
             return {"status": "FAILED", "error": f"Agent ontology ingestion error: {e}"}
 
+    async def platform_stats(self) -> Dict[str, Any]:
+        """Return honest persistence counts; unavailable stores are never reported as zero."""
+        stats: Dict[str, Any] = {}
+
+        def qdrant_counts() -> dict[str, int]:
+            if not self.qdrant_client.collection_exists(COLLECTION_NAME):
+                return {"qdrant_vectors": 0, "rag_requirements": 0, "ontology_records": 0}
+            vectors = self.qdrant_client.count(
+                collection_name=COLLECTION_NAME, exact=True
+            ).count
+
+            def count_field(field: str, value: str) -> int:
+                return self.qdrant_client.count(
+                    collection_name=COLLECTION_NAME,
+                    count_filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key=field,
+                                match=models.MatchValue(value=value),
+                            )
+                        ]
+                    ),
+                    exact=True,
+                ).count
+
+            return {
+                "qdrant_vectors": vectors,
+                "rag_requirements": count_field("record_kind", "requirement"),
+                "ontology_records": count_field("source", "agent_ontology"),
+            }
+
+        try:
+            for name, value in (await asyncio.to_thread(qdrant_counts)).items():
+                stats[name] = {"status": "available", "count": value}
+        except Exception as exc:
+            logger.warning("Qdrant stats unavailable: %s", exc)
+            for name in ("qdrant_vectors", "rag_requirements", "ontology_records"):
+                stats[name] = {"status": "unavailable", "count": None}
+
+        try:
+            store = self.artifact_manager.object_store
+            documents, evidence = await asyncio.gather(
+                asyncio.to_thread(store.count_objects, "requirements/"),
+                asyncio.to_thread(store.count_objects, "artifacts/"),
+            )
+            stats["documents"] = {"status": "available", "count": documents}
+            stats["evidence_objects"] = {"status": "available", "count": evidence}
+        except Exception as exc:
+            logger.warning("RustFS stats unavailable: %s", exc)
+            stats["documents"] = {"status": "unavailable", "count": None}
+            stats["evidence_objects"] = {"status": "unavailable", "count": None}
+
+        try:
+            await self.artifact_manager.init_db_pool()
+            async with self.artifact_manager.db_pool.acquire() as connection:
+                test_runs = await connection.fetchval("SELECT COUNT(*) FROM test_runs")
+                active_versions = await connection.fetchval("SELECT COUNT(*) FROM active_artifacts")
+            stats["test_runs"] = {"status": "available", "count": test_runs}
+            stats["active_versions"] = {"status": "available", "count": active_versions}
+        except Exception as exc:
+            logger.warning("PostgreSQL stats unavailable: %s", exc)
+            stats["test_runs"] = {"status": "unavailable", "count": None}
+            stats["active_versions"] = {"status": "unavailable", "count": None}
+
+        available = sum(item["status"] == "available" for item in stats.values())
+        return {
+            "status": "available" if available == len(stats) else "partial",
+            "stores": stats,
+        }
+
 
 # --- 2. Agent Executor (A2A Protocol Implementation - Only used for native A2A requests) ---
 
@@ -449,6 +519,10 @@ async def ingest_document_handler(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=415)
 
 
+async def platform_stats_handler(request: Request):
+    return JSONResponse(await AGENT_LOGIC.platform_stats())
+
+
 # --- 4. Server Startup (The Executor that makes the agent runnable) ---
 
 if __name__ == '__main__':
@@ -497,6 +571,7 @@ if __name__ == '__main__':
         Route("/ingest_knowledge", endpoint=ingest_knowledge_handler, methods=["POST"]),
         Route("/ingest_ontology", endpoint=ingest_ontology_handler, methods=["POST"]),
         Route("/v1/documents", endpoint=ingest_document_handler, methods=["POST"]),
+        Route("/v1/stats", endpoint=platform_stats_handler, methods=["GET"]),
     ]
 
     # 6. Create the main Starlette application and mount the A2A app

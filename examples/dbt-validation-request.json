@@ -1,0 +1,12 @@
+{
+  "dialect": "snowflake",
+  "files": {
+    "dbt_project.yml": "name: aqe_analytics\nversion: 1.0.0\nprofile: aqe_generated\n",
+    "models/sources.yml": "version: 2\nsources:\n  - name: raw\n    tables:\n      - name: orders\n",
+    "models/schema.yml": "version: 2\nmodels:\n  - name: fct_orders\n    columns:\n      - name: id\n        tests: [unique, not_null]\n",
+    "models/staging/stg_orders.sql": "select id, status from {{ source('raw', 'orders') }}",
+    "models/intermediate/int_orders.sql": "select * from {{ ref('stg_orders') }}",
+    "models/marts/fct_orders.sql": "select * from {{ ref('int_orders') }}",
+    "README.md": "# AQE analytics\n"
+  }
+}

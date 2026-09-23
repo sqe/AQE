@@ -44,6 +44,16 @@ E2E_PATHS = (
     "test_execution_agent/",
     "utils/",
 )
+DOCS_PATHS = (
+    ".github/ISSUE_TEMPLATE/",
+    ".github/pull_request_template.md",
+    "docs/",
+    "README.md",
+)
+CONFIG_PATHS = (
+    "deploy/",
+    "docker-compose.yml",
+)
 
 
 def matches(path: str, patterns: tuple[str, ...]) -> bool:
@@ -52,6 +62,12 @@ def matches(path: str, patterns: tuple[str, ...]) -> bool:
 
 paths = {line.strip() for line in sys.stdin if line.strip()}
 build_all = any(matches(path, SHARED_IMAGE_PATHS) for path in paths)
+if paths and all(matches(path, DOCS_PATHS) for path in paths):
+    lane = "docs"
+elif paths and all(matches(path, DOCS_PATHS + CONFIG_PATHS) for path in paths):
+    lane = "config"
+else:
+    lane = "code"
 include = [
     {"name": name, "dockerfile": dockerfile}
     for name, dockerfile, patterns in IMAGES
@@ -60,5 +76,6 @@ include = [
 print(json.dumps({
     "image_matrix": {"include": include},
     "image_count": len(include),
+    "lane": lane,
     "run_e2e": any(matches(path, E2E_PATHS) for path in paths),
 }, separators=(",", ":")))

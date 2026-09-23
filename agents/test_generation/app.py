@@ -5,13 +5,15 @@ import logging
 import os
 import asyncio
 import asyncpg
+import hashlib
 import json
 import datetime
 import uuid
 from typing import Dict, Any, Tuple, Optional, List
+from urllib.parse import urlparse
 from qdrant_client import QdrantClient, models
 import httpx 
-from utils.agent_ontology import select_ontology_context
+from utils.agent_ontology import load_ontology, select_ontology_context
 from utils.object_store import ObjectStore
 from utils.test_types import resolve_test_type
 
@@ -38,9 +40,8 @@ logger = logging.getLogger("TestGenerationAgent")
 # --- Infrastructure Configuration ---
 POSTGRES_DB_URL = os.environ.get("POSTGRES_URL", "postgresql://user:pass@postgres:5432/qe_db")
 
-# Placeholder for environment-provided application ID and User ID
-APP_ID = os.environ.get("APP_ID", "default-agent-app")
 USER_ID = os.environ.get("USER_ID", "default-user") 
+GENERATION_POLICY_VERSION = "agent-suite-v5"
 
 # --- Qdrant and RAG Configuration ---
 QDRANT_CLIENT = QdrantClient(
@@ -61,15 +62,328 @@ LLM_EMBEDDING_ENDPOINT = os.environ.get("LLM_EMBEDDING_ENDPOINT", "")
 LLM_GENERATION_ENDPOINT = os.environ.get("LLM_GENERATION_ENDPOINT", "")
 LLM_EMBEDDING_MODEL = os.environ.get("LLM_EMBEDDING_MODEL", "")
 LLM_GENERATION_MODEL = os.environ.get("LLM_GENERATION_MODEL", "")
-LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "300"))
+# Leave one minute for persistence and graph publication inside Temporal's
+# ten-minute generation activity deadline.
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "540"))
 LLM_REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "none")
 GRAPH_API_URL = os.environ.get("GRAPH_API_URL", "http://diagnostics_agent:8006/v1/graph/events")
+GRAPH_EVENT_TIMEOUT_SECONDS = float(os.environ.get("GRAPH_EVENT_TIMEOUT_SECONDS", "3"))
 EMBEDDING_DIMENSION = 384 
 
 # Gemini API Constants 
 GEMINI_EMBEDDING_MODEL = "text-embedding-004"
 GEMINI_GENERATION_MODEL = "gemini-2.5-flash-preview-05-20"
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def resolve_target_identity(captured_state: Dict[str, Any]) -> str:
+    target = captured_state.get("target_agent") or {}
+    explicit = target.get("id") or captured_state.get("agent_name")
+    if explicit:
+        return str(explicit)
+    endpoint = captured_state.get("agent_card_url") or captured_state.get("url")
+    hostname = urlparse(str(endpoint or "")).hostname
+    if hostname:
+        return hostname
+    raise ValueError("A stable target agent identity or URL is required; refusing a generic fallback")
+
+
+def generation_fingerprint(captured_state: Dict[str, Any]) -> str:
+    """Identify every stable input whose change can require a different generated suite."""
+    source_analysis = captured_state.get("source_analysis") or {}
+    target = captured_state.get("target_agent") or {}
+    identity = {
+        "policy_version": GENERATION_POLICY_VERSION,
+        "test_type": resolve_test_type(captured_state),
+        "target": {
+            "id": target.get("id") or captured_state.get("agent_name"),
+            "version": target.get("version") or captured_state.get("agent_version"),
+            "card_url": target.get("card_url") or captured_state.get("agent_card_url"),
+            "skills": sorted(captured_state.get("skills") or target.get("skills") or []),
+        },
+        "source": {
+            "repository": captured_state.get("source_repository"),
+            "revision": captured_state.get("source_ref"),
+            "tree_sha": source_analysis.get("tree_sha"),
+            "paths": sorted(captured_state.get("source_paths") or []),
+        },
+        "requirements": {
+            "document_id": captured_state.get("knowledge_document_id"),
+            "refined": captured_state.get("refined_requirements") or [],
+            "spec": captured_state.get("spec"),
+        },
+        "contract": {
+            "scenarios": captured_state.get("scenarios") or [],
+            "archetype": captured_state.get("agent_archetype"),
+            "max_latency_ms": captured_state.get("max_latency_ms"),
+            "min_accuracy": captured_state.get("min_accuracy"),
+        },
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _target_segment(identity: str) -> str:
+    return "".join(character if character.isalnum() or character in "._-" else "-" for character in identity).strip("-.").lower()
+
+
+def compile_declared_github_mcp_suite(captured_state: Dict[str, Any]) -> Optional[str]:
+    """Compile the connector's complete declared contract without an LLM."""
+    scenarios = {
+        str(scenario.get("scenario_id")): scenario
+        for scenario in captured_state.get("scenarios", [])
+        if isinstance(scenario, dict)
+    }
+    list_scenario = scenarios.get("list-enabled-github-tools")
+    call_scenario = scenarios.get("call-allowlisted-list-branches")
+    if not list_scenario or not call_scenario:
+        return None
+    if list_scenario.get("skill_id") != "github.tools.list" or call_scenario.get("skill_id") != "github.tools.call":
+        return None
+    list_dimensions = set(list_scenario.get("required_dimensions") or [])
+    call_dimensions = set(call_scenario.get("required_dimensions") or [])
+    if list_dimensions != {"positive", "protocol_schema", "latency", "semantic_accuracy"}:
+        return None
+    if call_dimensions != {"positive", "protocol_schema", "malformed_input", "latency", "semantic_accuracy"}:
+        return None
+
+    list_expected = list_scenario.get("expected_response") or {}
+    call_expected = call_scenario.get("expected_response") or {}
+    malformed = call_expected.get("malformed_input") or {}
+    allowed_tools = list_expected.get("allowed_tool_names")
+    branch_schema = call_expected.get("branch_payload") or {}
+    required_fields = branch_schema.get("item_required_fields")
+    arguments = call_scenario.get("prompt")
+    list_url = (list_scenario.get("invocation") or {}).get("url")
+    call_url = (call_scenario.get("invocation") or {}).get("url")
+    if not (
+        isinstance(allowed_tools, list)
+        and all(isinstance(tool, str) for tool in allowed_tools)
+        and branch_schema.get("type") == "array"
+        and branch_schema.get("may_be_empty") is True
+        and isinstance(required_fields, list)
+        and all(isinstance(field, str) for field in required_fields)
+        and isinstance(arguments, dict)
+        and isinstance(list_url, str)
+        and isinstance(call_url, str)
+        and isinstance(malformed.get("request"), dict)
+        and malformed.get("isError") is True
+        and isinstance(malformed.get("message_contains"), str)
+    ):
+        return None
+
+    base_url = str(captured_state.get("url") or "").rstrip("/")
+    list_path = urlparse(list_url).path
+    call_path = urlparse(call_url).path
+    list_latency_seconds = float(list_scenario.get("max_latency_ms", 5000)) / 1000
+    call_latency_seconds = float(call_scenario.get("max_latency_ms", 10000)) / 1000
+    malformed_status = int(malformed.get("status_code", 200))
+    return f'''"""Deterministically compiled GitHub MCP connector contract tests."""
+
+import json
+import os
+import time
+
+import httpx
+import pytest
+
+
+AQE_TEST_LAYER = "agentic"
+AQE_SUITE_ID = "github-mcp-connector-contract"
+AQE_SKILL_TESTS = {{
+    "github.tools.list": {{
+        "positive": "test_github_tools_list_positive",
+        "protocol_schema": [
+            "test_github_tools_list_protocol_schema_body_object",
+            "test_github_tools_list_protocol_schema_tools_array",
+            "test_github_tools_list_protocol_schema_tools_non_empty",
+            "test_github_tools_list_protocol_schema_tool_objects",
+            "test_github_tools_list_protocol_schema_tool_name_strings",
+        ],
+        "latency": "test_github_tools_list_latency",
+        "semantic_accuracy": "test_github_tools_list_semantic_accuracy",
+    }},
+    "github.tools.call": {{
+        "positive": "test_github_tools_call_positive",
+        "protocol_schema": [
+            "test_github_tools_call_protocol_schema_content_type",
+            "test_github_tools_call_protocol_schema_content_array",
+            "test_github_tools_call_protocol_schema_content_non_empty",
+            "test_github_tools_call_protocol_schema_text_block",
+            "test_github_tools_call_protocol_schema_json_decodable",
+            "test_github_tools_call_protocol_schema_payload_array",
+            "test_github_tools_call_protocol_schema_branch_objects",
+            "test_github_tools_call_protocol_schema_branch_name_field",
+            "test_github_tools_call_protocol_schema_branch_sha_field",
+            "test_github_tools_call_protocol_schema_branch_protected_field",
+        ],
+        "malformed_input": [
+            "test_github_tools_call_malformed_input_status",
+            "test_github_tools_call_malformed_input_error_flag",
+            "test_github_tools_call_malformed_input_message",
+        ],
+        "latency": "test_github_tools_call_latency",
+        "semantic_accuracy": "test_github_tools_call_semantic_accuracy",
+    }},
+}}
+
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", {base_url!r})
+TOOLS_PATH = {list_path!r}
+LIST_BRANCHES_PATH = {call_path!r}
+ALLOWED_TOOL_NAMES = {sorted(allowed_tools)!r}
+LIST_BRANCHES_ARGUMENTS = {arguments!r}
+REQUIRED_BRANCH_FIELDS = {required_fields!r}
+MALFORMED_ARGUMENTS = {malformed["request"]!r}
+MALFORMED_MESSAGE = {malformed["message_contains"]!r}
+
+
+@pytest.fixture
+def client():
+    with httpx.Client(base_url=AGENT_BASE_URL, timeout=30) as value:
+        yield value
+
+
+def _decoded_mcp_text(response):
+    # The MCP envelope must contain a text block. Its decoded branch array may validly be [].
+    body = response.json()
+    content = body.get("content")
+    if not isinstance(content, list) or not content:
+        raise ValueError("MCP response must contain at least one content block")
+    first = content[0]
+    if not isinstance(first, dict) or first.get("type") != "text" or not isinstance(first.get("text"), str):
+        raise ValueError("MCP response must start with a text content block")
+    try:
+        return json.loads(first["text"])
+    except json.JSONDecodeError as exc:
+        raise ValueError("MCP text content is not valid JSON") from exc
+
+
+def test_github_tools_list_positive(client):
+    response = client.get(TOOLS_PATH)
+    assert response.status_code == 200
+
+
+def test_github_tools_list_protocol_schema_body_object(client):
+    body = client.get(TOOLS_PATH).json()
+    assert isinstance(body, dict)
+
+
+def test_github_tools_list_protocol_schema_tools_array(client):
+    tools = client.get(TOOLS_PATH).json().get("tools")
+    assert isinstance(tools, list)
+
+
+def test_github_tools_list_protocol_schema_tools_non_empty(client):
+    tools = client.get(TOOLS_PATH).json().get("tools")
+    assert isinstance(tools, list) and bool(tools)
+
+
+def test_github_tools_list_protocol_schema_tool_objects(client):
+    tools = client.get(TOOLS_PATH).json().get("tools")
+    assert isinstance(tools, list) and all(isinstance(tool, dict) for tool in tools)
+
+
+def test_github_tools_list_protocol_schema_tool_name_strings(client):
+    tools = client.get(TOOLS_PATH).json().get("tools")
+    assert isinstance(tools, list) and all(isinstance(tool.get("name"), str) for tool in tools if isinstance(tool, dict))
+
+
+def test_github_tools_list_latency(client):
+    started = time.monotonic()
+    client.get(TOOLS_PATH)
+    assert time.monotonic() - started <= {list_latency_seconds!r}
+
+
+def test_github_tools_list_semantic_accuracy(client):
+    tools = client.get(TOOLS_PATH).json()["tools"]
+    names = [tool["name"] for tool in tools]
+    assert bool(names) and set(names).issubset(set(ALLOWED_TOOL_NAMES))
+
+
+def test_github_tools_call_positive(client):
+    response = client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS)
+    assert response.status_code == 200
+
+
+def test_github_tools_call_protocol_schema_content_type(client):
+    response = client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS)
+    assert response.headers.get("content-type", "").startswith("application/json")
+
+
+def test_github_tools_call_protocol_schema_content_array(client):
+    response = client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS)
+    content = response.json().get("content")
+    assert isinstance(content, list)
+
+
+def test_github_tools_call_protocol_schema_content_non_empty(client):
+    content = client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS).json().get("content")
+    assert isinstance(content, list) and bool(content)
+
+
+def test_github_tools_call_protocol_schema_text_block(client):
+    content = client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS).json().get("content")
+    assert isinstance(content, list) and bool(content) and isinstance(content[0], dict) and content[0].get("type") == "text" and isinstance(content[0].get("text"), str)
+
+
+def test_github_tools_call_protocol_schema_json_decodable(client):
+    payload = _decoded_mcp_text(client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS))
+    assert payload is not None
+
+
+def test_github_tools_call_protocol_schema_payload_array(client):
+    branches = _decoded_mcp_text(client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS))
+    assert isinstance(branches, list)
+
+
+def test_github_tools_call_protocol_schema_branch_objects(client):
+    branches = _decoded_mcp_text(client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS))
+    assert isinstance(branches, list) and all(isinstance(branch, dict) for branch in branches)
+
+
+def test_github_tools_call_protocol_schema_branch_name_field(client):
+    branches = _decoded_mcp_text(client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS))
+    assert isinstance(branches, list) and all(isinstance(branch, dict) and "name" in branch for branch in branches)
+
+
+def test_github_tools_call_protocol_schema_branch_sha_field(client):
+    branches = _decoded_mcp_text(client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS))
+    assert isinstance(branches, list) and all(isinstance(branch, dict) and "sha" in branch for branch in branches)
+
+
+def test_github_tools_call_protocol_schema_branch_protected_field(client):
+    branches = _decoded_mcp_text(client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS))
+    assert isinstance(branches, list) and all(isinstance(branch, dict) and "protected" in branch for branch in branches)
+
+
+def test_github_tools_call_malformed_input_status(client):
+    response = client.post(LIST_BRANCHES_PATH, json=MALFORMED_ARGUMENTS)
+    assert response.status_code == {malformed_status!r}
+
+
+def test_github_tools_call_malformed_input_error_flag(client):
+    body = client.post(LIST_BRANCHES_PATH, json=MALFORMED_ARGUMENTS).json()
+    assert body.get("isError") is True
+
+
+def test_github_tools_call_malformed_input_message(client):
+    response = client.post(LIST_BRANCHES_PATH, json=MALFORMED_ARGUMENTS)
+    body = response.json()
+    texts = [block.get("text", "") for block in body.get("content", []) if isinstance(block, dict)]
+    assert any(MALFORMED_MESSAGE in text for text in texts)
+
+
+def test_github_tools_call_latency(client):
+    started = time.monotonic()
+    client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS)
+    assert time.monotonic() - started <= {call_latency_seconds!r}
+
+
+def test_github_tools_call_semantic_accuracy(client):
+    branches = _decoded_mcp_text(client.post(LIST_BRANCHES_PATH, json=LIST_BRANCHES_ARGUMENTS))
+    # all(...) over [] is intentional because the declared branch payload may be empty.
+    assert isinstance(branches, list) and all(isinstance(branch, dict) and all(field in branch for field in REQUIRED_BRANCH_FIELDS) for branch in branches)
+'''
 
 
 class LLMServiceClient:
@@ -280,6 +594,8 @@ class TestGenerationAgentLogic:
                 if not row:
                     raise FileNotFoundError(f"No active artifact found for type: {artifact_type}")
                 return row['current_version_id'], row['object_path']
+            except FileNotFoundError:
+                raise
             except Exception as e:
                 logger.error(f"Error querying artifact metadata: {e}")
                 raise
@@ -320,12 +636,12 @@ class TestGenerationAgentLogic:
         search_result = await asyncio.to_thread(blocking_search)
         return [hit.payload['text_chunk'] for hit in search_result if hit.payload and 'text_chunk' in hit.payload]
 
-    async def _store_test_artifact(self, task_id: str, test_code: str) -> str:
+    async def _store_test_artifact(self, task_id: str, test_code: str, target_identity: str) -> str:
         """
         Stores generated test code in RustFS and returns its object path.
         """
         # Define a consistent path structure for test code artifacts
-        object_path = f"artifacts/{APP_ID}/tests/{task_id}/test_code.py"
+        object_path = f"artifacts/targets/{_target_segment(target_identity)}/tests/{task_id}/test_code.py"
         data_bytes = test_code.encode('utf-8')
         data_size = len(data_bytes)
         
@@ -354,10 +670,33 @@ class TestGenerationAgentLogic:
         Uses task_id for consistency with reporting service.
         """
         if not self.db_pool: await self.init_db_pool()
+        target_identity = resolve_target_identity(captured_state)
+        target_profile = {
+            key: captured_state[key]
+            for key in (
+                "agent_archetype", "autonomy", "data_sensitivity",
+                "impact", "network_scope", "risk_labels",
+            )
+            if key in captured_state
+        }
+        target_profile["skill_test_dimensions"] = {
+            skill_id: sorted(
+                {
+                    dimension
+                    for scenario in captured_state.get("scenarios", [])
+                    if isinstance(scenario, dict) and scenario.get("skill_id") == skill_id
+                    for dimension in scenario.get("required_dimensions", [])
+                }
+            )
+            for skill_id in captured_state.get("skills", [])
+            if isinstance(skill_id, str)
+        }
+        target_profile["source_repository"] = captured_state.get("source_repository")
+        target_profile["source_revision"] = captured_state.get("source_ref")
+        target_profile["generation_fingerprint"] = generation_fingerprint(captured_state)
+        target_profile["generation_policy_version"] = GENERATION_POLICY_VERSION
 
         async with self.db_pool.acquire() as conn:
-            # We use the public data collection path structure as a convention
-            app_specific_path = f"/artifacts/{APP_ID}/public/data/test_runs/{task_id}"
             try:
                 await conn.execute("""
                     INSERT INTO test_runs (
@@ -379,26 +718,17 @@ class TestGenerationAgentLogic:
                         test_type = EXCLUDED.test_type;
                 """,
                     task_id,
-                    APP_ID,
+                    target_identity,
                     "PENDING", # Initial status
                     USER_ID,   # User ID of the agent that generated the run
                     object_path,
                     url,
                     "# Code is stored in RustFS.",
-                    str((captured_state.get("target_agent") or {}).get("id") or APP_ID),
+                    target_identity,
                     str((captured_state.get("target_agent") or {}).get("version") or captured_state.get("agent_version") or "unversioned"),
                     captured_state.get("agent_card_url"),
                     json.dumps(captured_state.get("skills", [])),
-                    json.dumps(
-                        {
-                            key: captured_state[key]
-                            for key in (
-                                "agent_archetype", "autonomy", "data_sensitivity",
-                                "impact", "network_scope", "risk_labels"
-                            )
-                            if key in captured_state
-                        }
-                    ),
+                    json.dumps(target_profile),
                     resolve_test_type(captured_state),
                 )
                 logger.info(f"PostgreSQL metadata created for task_id: {task_id}")
@@ -407,14 +737,49 @@ class TestGenerationAgentLogic:
                 raise
 
 
+    async def _find_reusable_test(self, fingerprint: str) -> Optional[Dict[str, Any]]:
+        if not self.db_pool:
+            await self.init_db_pool()
+        async with self.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT task_id, object_path, test_type, data_artifact_version
+                FROM test_runs
+                WHERE status = 'PASSED' AND passed = TRUE AND test_catalog IS NOT NULL
+                  AND target_agent_profile->>'generation_fingerprint' = $1
+                ORDER BY timestamp_completed DESC
+                LIMIT 1
+                """,
+                fingerprint,
+            )
+        if row is None:
+            return None
+        return {
+            "status": "SUCCESS",
+            "task_id": row["task_id"],
+            "rag_version_id": row["data_artifact_version"] or "REUSED",
+            "object_path": row["object_path"],
+            "test_type": row["test_type"],
+            "grounding": {"reused_approved_suite": True, "generation_fingerprint": fingerprint},
+            "reused": True,
+        }
+
+
     async def generate_tests_and_persist(self, captured_state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Main orchestration method: generates code, persists it, and returns the ID.
         """
+        fingerprint = generation_fingerprint(captured_state)
+        reusable = await self._find_reusable_test(fingerprint)
+        if reusable:
+            logger.info("Reusing approved generated suite for fingerprint %s", fingerprint)
+            return reusable
+
         # 1. Generate Test Code (using existing RAG/LLM logic)
         generation_result = await self.generate_tests(captured_state)
         test_code = generation_result.get("test_code")
         version_id = generation_result.get("artifact_version_used")
+        grounding = generation_result.get("grounding") or {}
         test_spec = captured_state.get('spec', 'General Test')
         target_url = captured_state.get('url', 'N/A')
 
@@ -426,26 +791,30 @@ class TestGenerationAgentLogic:
         try:
             # Generate a unique ID for this execution run, using the consistent name task_id
             task_id = str(uuid.uuid4())
-            
-            object_path = await self._store_test_artifact(task_id, test_code)
+            target_identity = resolve_target_identity(captured_state)
+            object_path = await self._store_test_artifact(task_id, test_code, target_identity)
             
             await self._create_test_run_metadata_in_postgres(
                 task_id, object_path, test_spec, target_url, captured_state
             )
             try:
-                await self.llm_service.client.post(
-                    GRAPH_API_URL,
-                    json={
-                        "kind": "test_generated",
-                        "task_id": task_id,
-                        "test_type": resolve_test_type(captured_state),
-                        "target_agent": captured_state.get("target_agent") or {},
-                        "agent_archetype": captured_state.get("agent_archetype"),
-                    },
-                    timeout=3,
+                await asyncio.wait_for(
+                    self.llm_service.client.post(
+                        GRAPH_API_URL,
+                        json={
+                            "kind": "test_generated",
+                            "task_id": task_id,
+                            "test_type": resolve_test_type(captured_state),
+                            "target_agent": captured_state.get("target_agent") or {},
+                            "agent_archetype": captured_state.get("agent_archetype"),
+                        },
+                        timeout=GRAPH_EVENT_TIMEOUT_SECONDS,
+                    ),
+                    timeout=GRAPH_EVENT_TIMEOUT_SECONDS,
                 )
-            except httpx.HTTPError:
+            except (httpx.HTTPError, asyncio.TimeoutError):
                 logger.warning("Live graph event could not be delivered", exc_info=True)
+            logger.info("Generation response ready for task_id: %s", task_id)
             
             # Return the ID and metadata needed by the client/Execution Agent
             return {
@@ -454,6 +823,7 @@ class TestGenerationAgentLogic:
                 "rag_version_id": version_id,
                 "object_path": object_path,
                 "test_type": resolve_test_type(captured_state),
+                "grounding": grounding,
             }
         except Exception as e:
             error_message = f"# Error during persistence (RustFS/Postgres): {str(e)}"
@@ -465,6 +835,19 @@ class TestGenerationAgentLogic:
         """
         Generates production-ready Python for one explicitly selected test runtime.
         """
+        compiled_suite = compile_declared_github_mcp_suite(captured_state)
+        if compiled_suite:
+            logger.info("Compiled declared GitHub MCP contract without generation-model inference")
+            return {
+                "test_code": compiled_suite,
+                "artifact_version_used": "DECLARED_CONTRACT",
+                "grounding": {
+                    "generation_method": "declared_contract_compiler",
+                    "rag_version_id": "NOT_REQUIRED",
+                    "product_context": [],
+                    "ontology_context": [],
+                },
+            }
         rag_artifact_type = "RAG_KNOWLEDGE_BASE" 
         version_id = "UNAVAILABLE"
 
@@ -493,16 +876,16 @@ class TestGenerationAgentLogic:
             
             product_context_chunks = await self.retrieve_knowledge(query_context)
             product_context = "\n".join([f"- {c}" for c in product_context_chunks])
-            ontology_context = "\n".join(
-                f"- {record}" for record in select_ontology_context(captured_state)
-            )
+            ontology_records = select_ontology_context(captured_state)
+            ontology_context = "\n".join(f"- {record}" for record in ontology_records)
+            ontology_version = load_ontology()["version"]
             
             rag_context_section = f"""
         ***
         PRODUCT CONTEXT (from Qdrant RAG V{version_id}):
         {product_context if product_context else "No specific product knowledge found. Rely on general web automation best practices."}
 
-        APPLICABLE AGENT ONTOLOGY (V1.0.0):
+        APPLICABLE AGENT ONTOLOGY (V{ontology_version}):
         {ontology_context}
         ***"""
             
@@ -518,16 +901,24 @@ class TestGenerationAgentLogic:
             5. **Atomic Tests:** Every `test_` function verifies exactly one observable outcome with exactly one Python `assert` or Playwright `expect(...)`. Split multiple outcomes into separate tests and share setup through fixtures.
             6. **Do Not Hide Failures:** Never weaken expected values, catch assertion failures, use arbitrary sleeps, or conditionally skip an assertion to make a test pass.
             7. **Isolation:** Tests must not depend on execution order or state left by another test. Use fixtures for setup and cleanup.
+            8. **Exact Declared Scope:** Generate only each scenario's `required_dimensions`. Do not add authentication, tenancy, retries, cancellation, streaming, or audit requirements unless explicitly declared.
+            9. **Malformed Input:** A malformed HTTP request must be rejected with a non-2xx status or a declared structured protocol error; never treat an unexplained 200 response as successful rejection.
             ***"""
 
             full_prompt = f"""
             You are an expert Python end-to-end test automation engineer.
             Generate a complete executable pytest file for TEST TYPE: {test_type}.
-            If TEST TYPE is agent, use httpx and utils.target_auth.authenticated_client; do not
-            import Playwright or depend on a browser. Validate the Agent Card, A2A/JSON-RPC/API,
-            declared skill, and orchestration contracts.
+            If TEST TYPE is agent, use httpx; use utils.target_auth.authenticated_client only when
+            authentication is explicitly declared. Do not import Playwright or depend on a browser.
+            Validate the Agent Card, A2A/JSON-RPC/API,
+            declared skill, and orchestration contracts. Resolve the runtime endpoint with
+            `os.getenv("AGENT_CARD_URL", supplied_agent_card_url)` for Agent Card requests and
+            `os.getenv("AGENT_BASE_URL", supplied_target_url)` for other requests. Never hardcode
+            a cluster-only hostname without this environment override.
             If TEST TYPE is website, use Playwright and utils.target_auth browser helpers; test
-            observable browser behavior. Use login_with_form only when form auth is configured.
+            observable browser behavior. Resolve its runtime endpoint with
+            `os.getenv("TARGET_BASE_URL", supplied_target_url)`. Use login_with_form only when
+            form auth is configured.
             Do not assume a profession or business domain. Derive behavior only from the supplied
             Agent Card, declared skills, scenario, product evidence, and observable outcomes.
             
@@ -537,12 +928,19 @@ class TestGenerationAgentLogic:
             Declared Agent Skills: {json.dumps(agent_skills, default=str)}
             Discovered Agent Contracts and Evaluation Scenarios:
             {json.dumps(agent_discovery, default=str)}
+            AUTOPILOT Scenarios Selected by the Fleet Controller:
+            {json.dumps(captured_state.get("scenarios") or [], default=str)}
             Refined Requirements and Expected Outcomes:
             {json.dumps(refined_requirements, default=str)}
             GitHub Source Analysis (candidate evidence, not a confirmed defect):
             {json.dumps(source_analysis, default=str)}
             Test Objective/Specification: {test_spec}
             Additional User Context: {kb_context}
+            Previous Quality Oracle Feedback (empty on the first attempt):
+            {json.dumps(captured_state.get("oracle_feedback") or {}, default=str)}
+
+            If Oracle feedback is present, regenerate the complete suite and correct every cited issue
+            without weakening assertions, dropping declared coverage, or adding undeclared requirements.
             
             {llm_constraint}
 
@@ -550,6 +948,24 @@ class TestGenerationAgentLogic:
 
             Generate version-safe E2E tests for the declared behavior. Validate protocol contracts,
             orchestration handoffs, and domain outcomes without replacing real expected values with mocks.
+            Define `AQE_TEST_LAYER` as the suite's primary layer: `api`, `db`, `ui`, `agentic`,
+            `integration`, `performance`, or `security`. Agent protocol/skill suites normally use
+            `agentic`; dbt data-contract suites use `db`; browser journeys use `ui`.
+            Define `AQE_SUITE_ID` as a semantic kebab-case capability or user-journey name for every
+            generated suite; never use a UUID or generic name such as generated-test.
+            For agent tests, define a literal module-level `AQE_SKILL_TESTS` dictionary. It must map
+            every advertised skill ID to exactly the independently executable pytest dimensions listed
+            in that skill's scenarios under `required_dimensions`; each dimension may name one atomic test
+            function or a non-empty list of atomic test functions when multiple observable invariants are
+            declared. Invoke the skill in every mapped test—Agent Card membership alone is not skill coverage.
+            For MCP, test tools/list and invoke only declared safe tools.
+            Every mapped pytest function name must include the normalized skill ID and dimension, for example
+            `test_dbt_project_validate_malformed_input`; never use UUIDs or names such as test_case_1.
+            For A2A, validate JSON-RPC envelopes, task states, and declared streaming/cancellation.
+            Add semantic-accuracy tests only when an explicit expected response is supplied. If an
+            invocation URL, payload, or prompt is absent, do not invent it or emit a fake passing test:
+            emit a statically skipped contract marker whose reason starts with `REQUIREMENTS_NEEDED:`;
+            never use `assert False` for missing requirements.
             When source findings are supplied, design observable black-box tests that could reproduce
             them; never assert that a source candidate is a real defect without runtime evidence.
             The response must be *only* the Python code block.
@@ -563,7 +979,12 @@ class TestGenerationAgentLogic:
 
             return {
                 "test_code": test_code,
-                "artifact_version_used": version_id
+                "artifact_version_used": version_id,
+                "grounding": {
+                    "rag_version_id": version_id,
+                    "product_context": product_context_chunks,
+                    "ontology_context": ontology_records,
+                },
             }
 
         except Exception as e:
@@ -665,13 +1086,8 @@ async def generate_tests_handler(request: Request):
                 "error_details": result["error"]
             }, status_code=500)
 
-        # Success: Return the ID so the client can tell the Execution Agent which artifact to run
-        return JSONResponse({
-            "status": "SUCCESS", 
-            "task_id": result["task_id"], # Return task_id
-            "rag_version_id": result["rag_version_id"],
-            "test_type": result["test_type"],
-        }, status_code=200)
+        # Preserve immutable artifact provenance for the Oracle and executor.
+        return JSONResponse(result, status_code=200)
 
     except json.JSONDecodeError:
         logger.error("Error decoding JSON request body.")

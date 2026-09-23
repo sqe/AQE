@@ -1,0 +1,8 @@
+name: quality-oracle
+version: 1.0.0
+description: Independently reviews generated tests using requirements, ontology, RAG memory, and risk policy
+port: 8017
+ontology:
+  archetype: software_quality_engineering
+skills:
+  - oracle.review.generated_test

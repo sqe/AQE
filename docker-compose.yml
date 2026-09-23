@@ -173,6 +173,7 @@ services:
       LLM_PROVIDER_MODE: ${LLM_PROVIDER_MODE:-SELF_HOSTED}
       LLM_EMBEDDING_ENDPOINT: ${LLM_EMBEDDING_ENDPOINT:-}
       LLM_GENERATION_ENDPOINT: ${LLM_GENERATION_ENDPOINT:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-540}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       TEST_CATALOG_REPOSITORY: ${TEST_CATALOG_REPOSITORY:-}
       TEST_CATALOG_BRANCH: ${TEST_CATALOG_BRANCH:-aqe-generated-tests}
@@ -181,6 +182,27 @@ services:
     ports:
       - "8001:8001"
     depends_on: [postgres, rustfs_init, qdrant, kafka, redis, artifact_management_agent]
+
+  quality_oracle_agent:
+    build:
+      context: .
+      dockerfile: agents/quality_oracle/Dockerfile
+    environment:
+      OBJECT_STORE_ENDPOINT: http://rustfs:9000
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-rustfsadmin}"
+      LLM_PROVIDER_MODE: ${LLM_PROVIDER_MODE:-SELF_HOSTED}
+      LLM_GENERATION_ENDPOINT: ${LLM_GENERATION_ENDPOINT:-}
+      LLM_GENERATION_MODEL: ${LLM_GENERATION_MODEL:-}
+      ORACLE_PROVIDER_MODE: ${ORACLE_PROVIDER_MODE:-}
+      ORACLE_GENERATION_ENDPOINT: ${ORACLE_GENERATION_ENDPOINT:-}
+      ORACLE_GENERATION_MODEL: ${ORACLE_GENERATION_MODEL:-}
+      ORACLE_REASONING_EFFORT: ${ORACLE_REASONING_EFFORT:-high}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ORACLE_GEMINI_API_KEY: ${ORACLE_GEMINI_API_KEY:-}
+    ports:
+      - "8017:8017"
+    depends_on: [rustfs_init, test_generation_agent]
 
   github_analysis_agent:
     build:
@@ -212,6 +234,7 @@ services:
       context: .
       dockerfile: agents/dbt_builder/Dockerfile
     environment:
+      DBT_BUILDER_PUBLIC_URL: http://dbt_builder_agent:8016
       OBJECT_STORE_ENDPOINT: http://rustfs:9000
       LLM_GENERATION_ENDPOINT: ${LLM_GENERATION_ENDPOINT:-}
       LLM_GENERATION_MODEL: ${LLM_GENERATION_MODEL:-}
@@ -330,15 +353,19 @@ services:
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_TASK_QUEUE: aqe-workflows
+      TEMPORAL_UI_URL: http://127.0.0.1:18088
       AGENT_TEST_EXECUTION_URL: http://test_execution_agent:8003/run_tests
       WEBSITE_TEST_EXECUTION_URL: http://website_test_execution_agent:8013/run_tests
       SOURCE_ANALYSIS_URL: http://github_analysis_agent:8010/v1/analyze
+      QUALITY_ORACLE_URL: http://quality_oracle_agent:8017/v1/reviews
+      GRAPH_EVENTS_URL: http://diagnostics_agent:8006/v1/graph/events
     depends_on:
       temporal: {condition: service_healthy}
       test_generation_agent: {condition: service_started}
       test_execution_agent: {condition: service_started}
       website_test_execution_agent: {condition: service_started}
       github_analysis_agent: {condition: service_started}
+      quality_oracle_agent: {condition: service_started}
 
   workflow_api:
     build:
@@ -376,7 +403,7 @@ services:
       context: .
       dockerfile: agents/diagnostics/Dockerfile
     environment:
-      AGENT_PROBE_ALLOWED_HOSTS: "agent_builder_agent,artifact_management_agent,change_detection_agent,dbt_builder_agent,test_generation_agent,github_analysis_agent,github_connector_agent,github_commit_agent,webpage_state_capture_agent,test_execution_agent,website_test_execution_agent,llm_fine_tuning_agent,aqe_byoa,host.docker.internal"
+      AGENT_PROBE_ALLOWED_HOSTS: "agent_builder_agent,artifact_management_agent,change_detection_agent,dbt_builder_agent,test_generation_agent,quality_oracle_agent,github_analysis_agent,github_connector_agent,github_commit_agent,webpage_state_capture_agent,test_execution_agent,website_test_execution_agent,llm_fine_tuning_agent,aqe_byoa,host.docker.internal"
       DIAGNOSTICS_CORS_ORIGINS: http://localhost:3000
     ports:
       - "8006:8006"
@@ -386,6 +413,7 @@ services:
       - change_detection_agent
       - dbt_builder_agent
       - test_generation_agent
+      - quality_oracle_agent
       - github_analysis_agent
       - github_connector_agent
       - github_commit_agent

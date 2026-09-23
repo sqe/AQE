@@ -5,6 +5,8 @@ COPY agents/diagnostics/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY agents/diagnostics /app/agents/diagnostics
 COPY observability /app/observability
+COPY utils /app/utils
+COPY ontology /app/ontology
 USER 65532:65532
 EXPOSE 8006
 CMD ["uvicorn", "agents.diagnostics.app:app", "--host", "0.0.0.0", "--port", "8006"]

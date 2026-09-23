@@ -19,6 +19,10 @@ SOURCE_ANALYSIS_URL = os.getenv(
 AGENT_DISCOVERY_URL = os.getenv(
     "AGENT_DISCOVERY_URL", "http://diagnostics_agent:8006/v1/agent-discovery"
 )
+QUALITY_ORACLE_URL = os.getenv(
+    "QUALITY_ORACLE_URL", "http://quality_oracle_agent:8017/v1/reviews"
+)
+GRAPH_EVENTS_URL = os.getenv("GRAPH_EVENTS_URL") or "http://aqe-diagnostics:8006/v1/graph/events"
 
 
 async def _post(
@@ -29,7 +33,7 @@ async def _post(
 ) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(url, json=payload)
-        if response.status_code >= 400 and not allow_error_response:
+        if response.status_code >= 400 and (not allow_error_response or response.status_code >= 500):
             try:
                 detail = response.json().get("detail") or response.text
             except ValueError:
@@ -38,12 +42,25 @@ async def _post(
                 f"{url} returned HTTP {response.status_code}: {detail}",
                 non_retryable=400 <= response.status_code < 500,
             )
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            body = response.text[:1000] or "<empty body>"
+            raise ApplicationError(
+                f"{url} returned non-JSON HTTP {response.status_code} "
+                f"({response.headers.get('content-type', 'unknown content type')}): {body}",
+                non_retryable=response.status_code < 500,
+            ) from exc
 
 
 @activity.defn(name="generate_tests")
 async def generate_tests(request: dict[str, Any]) -> dict[str, Any]:
     return await _post(GENERATION_URL, request, 600)
+
+
+@activity.defn(name="review_generated_tests")
+async def review_generated_tests(request: dict[str, Any]) -> dict[str, Any]:
+    return await _post(QUALITY_ORACLE_URL, request, 600)
 
 
 @activity.defn(name="analyze_source")
@@ -62,3 +79,14 @@ async def execute_and_repair(request: dict[str, Any]) -> dict[str, Any]:
     test_type = request.get("test_type", "agent")
     url = WEBSITE_EXECUTION_URL if test_type == "website" else AGENT_EXECUTION_URL
     return await _post(url, request, 900, allow_error_response=True)
+
+
+@activity.defn(name="record_workflow_stage")
+async def record_workflow_stage(event: dict[str, Any]) -> dict[str, Any]:
+    """Publish best-effort live telemetry without making observability a workflow dependency."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.post(GRAPH_EVENTS_URL, json=event)
+        return {"delivered": response.is_success}
+    except httpx.HTTPError:
+        return {"delivered": False}

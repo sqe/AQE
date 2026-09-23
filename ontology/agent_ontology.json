@@ -1,6 +1,6 @@
 {
   "ontology_id": "aqe-agent-ontology",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Domain-neutral classification and quality obligations for internal and external agents.",
   "dimensions": {
     "interaction": ["request_response", "streaming", "event_driven", "human_in_the_loop", "multi_agent"],
@@ -73,6 +73,14 @@
       "signals": ["orchestrate", "delegate", "route", "supervisor", "workflow", "agent team"],
       "quality_attributes": ["routing correctness", "handoff integrity", "bounded delegation", "loop prevention", "end-to-end traceability"],
       "required_scenarios": ["unavailable specialist", "schema mismatch", "cyclic delegation", "mixed-version fleet", "partial result", "cancellation propagation"]
+    },
+    {
+      "id": "software_quality_engineering",
+      "display_name": "Software Quality Engineering",
+      "product_name": "AI Buster",
+      "signals": ["quality engineering", "quality assurance", "software testing", "test generation", "generate tests", "generate_tests", "test execution", "pytest", "qe validate", "qe repair", "diagnostics", "regression testing", "golden evaluation", "test automation"],
+      "quality_attributes": ["advertised-skill coverage", "oracle strength", "test isolation", "determinism", "diagnostic precision", "repair integrity", "latency and reliability measurement"],
+      "required_scenarios": ["positive invocation for every executable advertised skill", "response protocol and schema validation", "malformed and adversarial input per skill", "declared latency threshold per skill", "semantic accuracy against declared golden oracles", "failure classification without weakened assertions", "version-pinned regression publication"]
     },
     {
       "id": "website_browser",

@@ -42,3 +42,11 @@ class ObjectStore:
             Body=payload,
             ContentType=content_type,
         )
+
+    def count_objects(self, prefix: str = "") -> int:
+        """Count objects through the S3 paginator without loading object bodies."""
+        paginator = self.client.get_paginator("list_objects_v2")
+        return sum(
+            int(page.get("KeyCount", len(page.get("Contents", []))))
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix)
+        )
