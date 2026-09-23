@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 from agents.test_generation import app as test_generation
 
@@ -131,3 +132,9 @@ def test_sample_run_positive():
         len(logic.llm_service.calls),
         "single-outcome" in logic.llm_service.calls[1],
     ) == ([], valid.strip(), 2, True)
+
+
+def test_generation_image_packages_static_quality_gate():
+    dockerfile = Path("agents/test_generation/Dockerfile").read_text()
+
+    assert "COPY agents/test_execution/test_quality.py /app/agents/test_execution/test_quality.py" in dockerfile
