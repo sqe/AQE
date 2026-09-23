@@ -476,6 +476,10 @@ to the correct HTTP or browser executor.
   live model-evaluation shards and the disposable integration/telemetry gate
   pass. Published images include provenance and SBOM attestations. Configure the
   optional `RELEASE_SLACK_WEBHOOK_URL` secret for release-channel results.
+- `.github/workflows/promote-release.yml`: the approved promotion entry point.
+  It verifies the immutable candidate images running in Kubernetes, model
+  connectivity, a fully passing Autopilot workflow, and green CI at the current
+  `aqe-generated-tests` branch head before creating the final SemVer tag.
 - [`docs/production-release.md`](docs/production-release.md): scalable
   trunk-based merge queue, immutable candidates, SemVer promotion, verification,
   and rollback checklist.
@@ -487,6 +491,8 @@ to the correct HTTP or browser executor.
   endpoint is unavailable, plus a PostSync check for every AQE Agent Card.
 
 Every deployable agent owns `agents/<agent>/{app.py,Dockerfile,requirements.txt,agent.yaml}`.
+The [agent documentation index](agents/README.md) links each runtime's contract
+and Mermaid data-flow diagram.
 The two execution agents are distinct image and policy boundaries: HTTP/A2A
 tests do not carry a browser, while website tests use the official Playwright
 runtime. Install the Argo CD project and application after providing

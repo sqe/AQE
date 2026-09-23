@@ -119,6 +119,16 @@ local agents, set repository variable `E2E_RUNNER` to the label of a secured
 self-hosted runner on that network; do not use an unreachable Kubernetes
 Service hostname on a GitHub-hosted runner.
 
+### Generated tests as release evidence
+
+A sandbox pass is necessary but is not the final release signal. Every passing
+Autopilot child publishes its immutable suite to `aqe-generated-tests`; catalog
+CI reruns the checked-in suite against the candidate. Release promotion verifies
+that every fleet catalog commit is an ancestor of the current catalog branch
+head and that CI for that exact head succeeded. This prevents a stale green run
+or an uncommitted generated suite from authorizing a release. See
+[`production-release.md`](production-release.md) for the promotion workflow.
+
 To ground generation in source, add an allowlisted repository and immutable
 ref to the request:
 

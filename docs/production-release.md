@@ -76,16 +76,40 @@ may use `vX.Y.Z-rc.N`; production only accepts a final `vX.Y.Z` digest.
    **CI / ci-gate** on the synthetic integration commit before merging to `main`.
 2. Confirm the resulting `main` **Build and publish** run succeeds and its
    immutable SHA images pass development smoke tests.
-3. Optionally create `vX.Y.Z-rc.N` from that commit for a staging soak.
-4. Create the final annotated SemVer tag from the verified commit and push it:
+3. Deploy that exact `sha-<short-commit>` candidate through Helm/Argo CD and run
+   Autopilot against the candidate. Every executable child must pass; missing
+   contracts remain release blockers rather than skipped successes.
+
+   For the current Helm-managed candidate cluster, use the checked-in deployer
+   instead of hand-writing 18 image overrides:
 
    ```bash
-   git switch main && git pull --ff-only
-   git tag -a vX.Y.Z -m "AQE vX.Y.Z"
-   git push origin vX.Y.Z
+   scripts/deploy-candidate.sh $(git rev-parse origin/main)
    ```
 
-5. The tag workflow rejects tags not reachable from `main`, then creates a
+   Production should keep image values in Git and let Argo CD reconcile them;
+   the script is for the candidate environment and still verifies main ancestry.
+4. Require **Versioned agent E2E catalog** to pass at the current
+   `aqe-generated-tests` branch head. This proves the committed generated tests,
+   not only their original sandbox execution.
+5. Dispatch **Promote verified candidate** with the final version, full candidate
+   SHA, fleet workflow ID, and candidate namespace. Configure its `release`
+   environment with required reviewers. The workflow re-verifies main ancestry,
+   the image-build run, every deployed image tag, pod availability, model
+   connectivity, the durable fleet result, and catalog CI before creating the
+   annotated tag:
+
+   ```bash
+   gh workflow run promote-release.yml \
+     -f version=vX.Y.Z \
+     -f candidate_sha=$(git rev-parse origin/main) \
+     -f fleet_workflow_id=qe-fleet-... \
+     -f namespace=aqe
+   ```
+
+6. The tag workflow rejects tags not reachable from `main`, aliases the already
+   verified multi-architecture `sha-*` manifests with the final SemVer tag
+   without rebuilding them, then creates a
    GitHub Release containing the Helm chart and
    checksum only after all ten live model-evaluation shards and the disposable
    Compose integration/telemetry environment pass. Offline dataset validation
@@ -93,10 +117,17 @@ may use `vX.Y.Z-rc.N`; production only accepts a final `vX.Y.Z` digest.
    `model-evaluation-shard-*` artifacts, verify SBOM/provenance attestations and
    both `linux/amd64` and `linux/arm64` image manifests. Promote Argo CD values
    by immutable tag or digest; never promote `main`.
-6. Confirm Argo CD sync, preflight, Agent Card validation, ontology ingestion,
+7. Confirm Argo CD sync, preflight, Agent Card validation, ontology ingestion,
    golden evaluation, metrics, and one agent plus one website smoke journey.
-7. Roll back by restoring the previous image digests in Git and letting Argo CD
+8. Roll back by restoring the previous image digests in Git and letting Argo CD
    reconcile. Preserve PostgreSQL/RustFS evidence and open an incident issue.
+
+This follows common build-once/promote-many practice: CI creates immutable
+artifacts once, candidate environments exercise those exact artifacts, an
+approval-protected promotion records the evidence, and production consumes the
+same digest. Generated tests are treated as a versioned test product with their
+own CI signal; they are not copied into a release merely because generation
+completed.
 
 Configure `RELEASE_SLACK_WEBHOOK_URL` as a GitHub Actions secret to publish the
 final GA, live-model, integration, image, and chart results to the release
