@@ -67,6 +67,7 @@ LLM_GENERATION_MODEL = os.environ.get("LLM_GENERATION_MODEL", "")
 # Leave one minute for persistence and graph publication inside Temporal's
 # ten-minute generation activity deadline.
 LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "540"))
+LLM_MAX_OUTPUT_TOKENS = int(os.environ.get("LLM_MAX_OUTPUT_TOKENS", "8192"))
 LLM_REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "none")
 GRAPH_API_URL = os.environ.get("GRAPH_API_URL", "http://diagnostics_agent:8006/v1/graph/events")
 GRAPH_EVENT_TIMEOUT_SECONDS = float(os.environ.get("GRAPH_EVENT_TIMEOUT_SECONDS", "3"))
@@ -526,14 +527,28 @@ class LLMServiceClient:
             url = f"{GEMINI_API_BASE_URL}/models/{GEMINI_GENERATION_MODEL}:generateContent"
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.1}
+                "generationConfig": {"maxOutputTokens": LLM_MAX_OUTPUT_TOKENS, "temperature": 0.1}
             }
             
             try:
                 response = await self._post_gemini(url, payload)
                 response.raise_for_status()
                 candidate = response.json().get('candidates', [{}])[0]
-                return candidate.get('content', {}).get('parts', [{}])[0].get('text', "# Gemini generation failed.")
+                finish_reason = candidate.get("finishReason")
+                if finish_reason == "MAX_TOKENS":
+                    raise RuntimeError(
+                        f"Gemini truncated generated test code at the {LLM_MAX_OUTPUT_TOKENS}-token output limit"
+                    )
+                text = "".join(
+                    str(part.get("text") or "")
+                    for part in candidate.get("content", {}).get("parts", [])
+                    if isinstance(part, dict)
+                )
+                if not text:
+                    raise RuntimeError(
+                        f"Gemini generation returned no content (finish_reason={finish_reason})"
+                    )
+                return text
             except Exception as e:
                 logger.error(f"Gemini Generation error: {e}")
                 raise
@@ -545,12 +560,12 @@ class LLMServiceClient:
                 if LLM_GENERATION_ENDPOINT.rstrip("/").endswith("/chat/completions"):
                     payload = {
                         "messages": [{"role": "user", "content": f"/no_think\n{prompt}"}],
-                        "max_tokens": 4096,
+                        "max_tokens": LLM_MAX_OUTPUT_TOKENS,
                         "temperature": 0.1,
                         "reasoning_effort": LLM_REASONING_EFFORT,
                     }
                 else:
-                    payload = {"prompt": prompt, "max_tokens": 4096, "temperature": 0.1}
+                    payload = {"prompt": prompt, "max_tokens": LLM_MAX_OUTPUT_TOKENS, "temperature": 0.1}
                 if LLM_GENERATION_MODEL:
                     payload["model"] = LLM_GENERATION_MODEL
                 

@@ -2,6 +2,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from agents.test_generation import app as test_generation
 
 
@@ -36,6 +38,35 @@ class _TransientGeminiClient:
         return _EmbeddingResponse()
 
 
+class _GenerationResponse:
+    status_code = 200
+    headers = {}
+
+    def __init__(self, finish_reason="STOP"):
+        self.finish_reason = finish_reason
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {
+            "candidates": [{
+                "finishReason": self.finish_reason,
+                "content": {"parts": [{"text": "first"}, {"text": " second"}]},
+            }]
+        }
+
+
+class _GenerationClient:
+    def __init__(self, finish_reason="STOP"):
+        self.finish_reason = finish_reason
+        self.request = None
+
+    async def post(self, url, **kwargs):
+        self.request = (url, kwargs)
+        return _GenerationResponse(self.finish_reason)
+
+
 def test_gemini_embedding_uses_current_model_resource(monkeypatch):
     monkeypatch.setattr(test_generation, "GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
     service = test_generation.LLMServiceClient("GEMINI", "secret")
@@ -68,6 +99,31 @@ def test_gemini_retries_transient_service_failures(monkeypatch):
     response = asyncio.run(service._post_gemini("https://gemini.invalid", {}))
 
     assert (response.status_code, service.client.calls) == (200, 3)
+
+
+def test_gemini_generation_uses_full_budget_and_all_text_parts(monkeypatch):
+    monkeypatch.setattr(test_generation, "LLM_MAX_OUTPUT_TOKENS", 8192)
+    service = test_generation.LLMServiceClient("GEMINI", "secret")
+    asyncio.run(service.client.aclose())
+    service.client = _GenerationClient()
+
+    generated = asyncio.run(service.generate_code("generate a complete suite"))
+
+    _, request = service.client.request
+    assert (generated, request["json"]["generationConfig"]["maxOutputTokens"]) == (
+        "first second",
+        8192,
+    )
+
+
+def test_gemini_generation_reports_output_truncation(monkeypatch):
+    monkeypatch.setattr(test_generation, "LLM_MAX_OUTPUT_TOKENS", 8192)
+    service = test_generation.LLMServiceClient("GEMINI", "secret")
+    asyncio.run(service.client.aclose())
+    service.client = _GenerationClient("MAX_TOKENS")
+
+    with pytest.raises(RuntimeError, match="truncated.*8192-token"):
+        asyncio.run(service.generate_code("generate a complete suite"))
 
 
 async def _completed_sleep():
