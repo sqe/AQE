@@ -8,7 +8,9 @@ are not standard architecture terms.
 
 See [Architecture and operating rules](docs/architecture.md) for the complete
 Temporal rules, Mermaid flow diagrams, deployment procedures, BYOA protocol,
-and internal/external agent examples.
+and internal/external agent examples. Use the
+[agent testing runbook](docs/testing-agents.md) to test current AQE agents or
+onboard a new internal or external agent.
 
 ## Architecture
 
@@ -17,7 +19,10 @@ flowchart TB
     Client[Client or agentic-kubernetes-platform] -->|JSON-RPC / Kafka| BYOA[AQE BYOA adapter]
     BYOA --> Temporal[Temporal workflow]
     Temporal --> Generate[Test generation<br/>ontology + RAG + model]
-    Generate --> Execute[Test execution<br/>quality gate + sandbox + pytest]
+    Generate --> Oracle[Quality Oracle<br/>independent reasoning + RAG review]
+    Oracle -->|approved| Execute[Test execution<br/>quality gate + sandbox + pytest]
+    Oracle -->|first rejection + feedback| Generate
+    Oracle -->|rejected after repair| Evidence
     Execute --> Diagnose[Failure diagnosis and bounded repair]
     Generate --> Evidence[(PostgreSQL state<br/>+ RustFS artifacts)]
     Execute --> Evidence
@@ -43,6 +48,7 @@ ordinary failures are never committed merely to make the catalog exhaustive.
 | BYOA adapter | Platform Agent Card, registry refresh, `tasks.aqe` / `results.aqe`, result-before-offset-commit |
 | Temporal | Durable generate → execute → repair coordination |
 | Generation agent | Product RAG + agent-ontology-grounded pytest source and immutable test artifact |
+| Quality Oracle | Independent pre-execution review against requirements, ontology, RAG evidence, skill coverage, and risk policy |
 | Agent executor | Browser-free HTTP/Agent Card/A2A tests in an isolated bounded runtime |
 | Website executor | Playwright Chromium journeys in a separate browser runtime |
 | Repair client | At most `MAX_REPAIR_ATTEMPTS`; preserve expected behavior and never weaken assertions |
@@ -70,7 +76,7 @@ exit status and JUnit XML—not output-string matching—determine the result.
 
 When `TEST_CATALOG_REPOSITORY` and `TEST_CATALOG_GITHUB_TOKEN` are configured,
 execution commits immutable Python tests and metadata to
-`generated-tests/<test-type>/<agent>/<version>/` on `TEST_CATALOG_BRANCH`. This lets CI test
+`generated-tests/<runtime>/<layer>/<agent>/<release-version>/<git-revision>/` on `TEST_CATALOG_BRANCH`. This lets CI test
 specific versions of teaching, listening, finance, insurance, or any other
 agent without encoding profession-specific behavior into AQE. Keep the catalog
 repository private when scenarios or expected outcomes contain sensitive data.
@@ -103,6 +109,7 @@ Endpoints:
 - diagnostics and external agent probes: <http://localhost:8006/docs>
 - experimental agent builder: <http://localhost:8015/docs>
 - review-only dbt builder: <http://localhost:8016/docs>
+- Quality Oracle gateway: <http://localhost:8017/docs>
 - Temporal UI: <http://localhost:8233>
 
 Start a durable run:
@@ -134,6 +141,78 @@ The UI polls `GET /v1/qe-runs/<workflow-id>` until completion and shows the
 result or root failure. GitHub source grounding is optional. If used, enter
 `owner/repository` (or a GitHub URL) plus a commit/tag and add that repository to
 `config.githubSourceAllowedRepositories`.
+
+### What happens after testing an existing agent
+
+Submitting an agent run is not only a prompt check. AQE performs and records this
+pipeline:
+
+```mermaid
+flowchart LR
+    A[Agent Card + requirements] --> D[Contract discovery]
+    D --> G[LLM generates atomic pytest]
+    G --> Q[Static quality and portability gate]
+    Q --> E[Bounded HTTP test executor]
+    E --> R[(PostgreSQL result + RustFS evidence)]
+    E --> L[Live graph: generated / started / completed]
+    E -->|all tests pass| C[GitHub versioned test catalog]
+    C --> CI[Catalog CI against that agent version]
+    E -->|assertion fails| F[Triage; publish only if confirmed defect]
+```
+
+For example, load **LOAD AGENT EXAMPLE** in the UI or follow the diagnostics
+agent command in [`docs/testing-agents.md`](docs/testing-agents.md). The initial
+response contains an accepted `workflow_id`; poll it until Temporal finishes:
+
+```bash
+curl -s "http://127.0.0.1:18008/v1/qe-runs/$workflow_id" | jq \
+  '{status,successful:.result.successful,summary:.result.summary,catalog:.result.test_catalog,error:.result.error}'
+```
+
+Interpret the result as follows:
+
+- `status: COMPLETED` means durable orchestration finished, not necessarily that
+  pytest passed. Require `result.successful: true` and zero failures/errors.
+- A successful run stores the generated `.py` test and metadata `.json` under
+  `generated-tests/agent/<layer>/<agent>/<release-version>/<git-revision>/` on `TEST_CATALOG_BRANCH`.
+- That catalog push starts **Versioned agent E2E catalog**. Its runner must reach
+  the tested version through `AGENT_CARD_URL`/`AGENT_BASE_URL`; local or private
+  targets require a self-hosted runner selected by `E2E_RUNNER`.
+- A product assertion failure remains evidence in PostgreSQL/RustFS for triage.
+  It is stored under `generated-findings/` only after explicit defect
+  confirmation; infrastructure, collection, and authentication errors are never
+  cataloged as product defects.
+- The dashboard's Observe tab provides separate Graph and 3D views of directed agent handoffs, generated
+  test nodes, final status, target relationships, and Temporal workflow history.
+
+The generated catalog is therefore a versioned regression suite, not merely an
+archive. Future releases rerun applicable tests against the configured endpoint.
+
+In **01 / DISCOVER**, leave Agent Card URL blank and click
+**DISCOVER ALL CONFIGURED AGENTS** to crawl the configured AQE fleet and its
+bounded orchestration links. Enter a URL and click **DISCOVER CARD** to inspect
+one internal or external agent instead. Discovery designs scenarios and reports
+missing semantic oracles; use **03 / EXECUTE** to generate and execute
+the resulting tests.
+
+**AUTOPILOT MODE** correlates runtime Agent Cards with `agent.yaml` manifests
+found through the governed GitHub MCP connector in every allowlisted connected
+repository. It source-grounds matched agents, derives protocol/declared-skill
+scenarios, generates and quality-gates atomic pytest, executes and repairs,
+persists evidence, updates the live graph, and catalogs passing tests in one
+durable Temporal campaign. A repository manifest without a reachable Agent Card
+is reported as `endpoint_required` and is not falsely marked tested. Child runs
+are intentionally bounded to one at a time by default to protect the model
+endpoint and serialize GitHub catalog writes. Closing the browser does not stop
+the accepted campaign; its fleet workflow ID remains queryable through
+`GET /v1/qe-runs/<workflow-id>`.
+
+Each passing child writes a generated test and metadata commit directly to the
+machine-managed `TEST_CATALOG_BRANCH`; it does not open one PR per agent. The UI
+shows direct file and commit links in the campaign result. Promote a reviewed
+campaign to `main` with one human-owned catalog PR rather than creating fleet PR
+spam. Failed infrastructure runs are not committed, and product failures require
+explicit confirmation before entering `generated-findings/`.
 
 To ground agent testing in its implementation, configure a read-only fine-grained
 GitHub token and an explicit repository allowlist, then include a commit, tag,
@@ -249,13 +328,32 @@ evaluation there; all normal CI and image builds remain on GitHub-hosted Linux.
 
 ## Experimental builders
 
-`agent-builder` turns a case study, refined document requirements, or pinned
-allowlisted GitHub evidence into a minimal Python agent bundle with semantic
-tests, a non-root Dockerfile, exact dependencies, and an Agent Card. `dbt-builder`
+The **experimental agent builder** turns a case study/specification, refined
+document requirements, or a pinned allowlisted GitHub repository into a minimal
+Python agent bundle with semantic tests, a non-root Dockerfile, exact
+dependencies, and an Agent Card. Upload PDF/DOCX/TXT/Markdown to knowledge
+ingestion first; review its refined requirements, then pass those requirements
+to `/v1/builds`. Raw PDFs are not sent directly to generated code. `dbt-builder`
 turns an explicit warehouse source inventory and business definitions into a
 documented staging → intermediate → marts dbt project with data tests. Both
 apply static gates, write ZIP evidence to RustFS, return `REVIEW_REQUIRED`, and
 never execute, deploy, or connect generated code to a warehouse.
+
+```mermaid
+flowchart LR
+    Spec[Case study or specification] --> Build[Experimental agent builder]
+    PDF[Uploaded PDF or document] --> Refine[Knowledge ingestion and requirement refinement]
+    Refine --> ReviewReq[Human-reviewed requirements]
+    ReviewReq --> Build
+    Repo[Pinned allowlisted GitHub repository] --> Analyze[Read-only source analysis]
+    Analyze --> Build
+    Build --> Gate[Parse, atomic semantic tests, pinned dependencies, non-root image, Agent Card]
+    Gate -->|pass| Zip[(RustFS review-only ZIP)]
+    Gate -->|fail| Reject[Structured quality rejection]
+    Zip --> Review[Human review and normal pull request]
+    Review --> Sandbox[Target-specific security and end-to-end testing]
+    Sandbox --> Deploy[Separately approved deployment]
+```
 
 ```bash
 curl -s http://localhost:8015/v1/builds -H 'content-type: application/json' \
@@ -277,7 +375,83 @@ knowledge-ingestion agent stores it in Qdrant and RustFS without deleting
 product knowledge. The generator combines deterministic applicable ontology
 rules with retrieved product evidence, so teaching, listening, finance,
 insurance, healthcare, action, research, and orchestration agents receive
-different obligations without hard-coded test implementations.
+different obligations without hard-coded test implementations. The stable
+`software_quality_engineering` archetype is presented in the product as
+**AI Buster**. It requires positive, protocol/schema, malformed-input, latency,
+semantic-oracle, repair-integrity, and versioned-regression scenarios.
+
+```mermaid
+flowchart LR
+    Cards[Live Agent Cards] --> Classify[Deterministic evidence classifier]
+    Ontology[Versioned governed ontology] --> Classify
+    Classify --> Families[Canonical fleet families]
+    Classify --> Unknown[Unclassified agents]
+    Unknown --> Pattern[Recurring skill-namespace discovery]
+    Pattern --> Candidate[Review-required emergent family]
+    Candidate -->|human approval and version change| Ontology
+    Families --> Route[Capability-family routing index]
+    Route --> Discover[Discover every advertised executable skill]
+    Discover --> Generate[Generate atomic deep tests]
+    Generate --> Execute[Sandbox execution]
+    Execute --> Evaluate[Business, protocol, security, latency and accuracy evidence]
+    Evaluate --> Catalog[Version-pinned GitHub regression catalog]
+    Evaluate --> Repair[Bounded repair without weaker assertions]
+    Repair --> Execute
+```
+
+The dynamic overlay discovers fleet patterns at runtime but cannot mutate the
+governed ontology. AQE generates required dimensions for 100% of advertised
+**executable** skills. Missing invocation contracts or semantic oracles remain
+visible coverage gaps; AQE does not invent expected answers or claim that
+undocumented behavior is fully correct.
+
+## Quality Oracle and enhanced LLM gateway
+
+Generated tests pass through `quality-oracle` before sandbox execution. The
+oracle reads the immutable test artifact from RustFS and reviews it against the
+original specification, refined requirements, discovered skill scenarios,
+source evidence, applicable ontology, and the exact Qdrant RAG chunks used for
+generation. It returns structured `APPROVED` or `REJECTED` evidence; malformed,
+unavailable, or ambiguous review responses fail closed.
+
+Complete machine-readable contracts use deterministic contract compilers when
+available. The GitHub MCP connector compiler produces atomic skill, schema,
+malformed-input, latency, and semantic tests without generation-model tokens;
+the independent Oracle still reviews the compiled artifact before execution.
+
+```mermaid
+flowchart LR
+    Inputs[Specs + Agent Card + source evidence] --> RAG[Qdrant memory + ontology]
+    RAG --> Generator[Generation model]
+    Generator --> Candidate[(Immutable candidate in RustFS)]
+    Candidate --> Oracle[Quality Oracle reasoning gateway]
+    RAG --> Oracle
+    Policy[Impact, sensitivity and risk policy] --> Oracle
+    Oracle -->|approved| Sandbox[Static gate + sandbox execution]
+    Oracle -->|first rejection + feedback| Generator
+    Oracle -->|rejected after repair| Evidence[(Review evidence + coverage gaps)]
+    Sandbox --> Metrics[Prometheus results and latency]
+    Sandbox --> Catalog[Versioned GitHub suite]
+```
+
+The gateway supports OpenAI-compatible self-hosted endpoints, including Qwen,
+and Gemini. Standard workloads may reuse the configured generation endpoint.
+High-impact, health, financial, regulated, or safety-critical workloads require
+a separately configured oracle endpoint or model by default so generation does
+not grade itself:
+
+```yaml
+stringData:
+  LLM_GENERATION_ENDPOINT: http://192.168.1.21:1234/v1/chat/completions
+  LLM_GENERATION_MODEL: qwen3.8-27b
+  ORACLE_PROVIDER_MODE: SELF_HOSTED
+  ORACLE_GENERATION_ENDPOINT: http://your-independent-model/v1/chat/completions
+  ORACLE_GENERATION_MODEL: your-reasoning-model
+  ORACLE_REASONING_EFFORT: high
+```
+
+Set `ORACLE_REQUIRE_INDEPENDENT_MODEL_FOR_HIGH_IMPACT=false` only for local
+experimentation. Production high-impact releases should retain the default.
 
 The dashboard's live graph follows the neighboring platform knowledge-graph
 visualizer contract (`nodes`, `edges`, `stats`). It displays AQE agents,
@@ -287,15 +461,18 @@ to the correct HTTP or browser executor.
 
 ## CI/CD and Argo CD
 
-- `.github/workflows/ci.yml`: compile, unit tests, golden evaluation, Compose
-  validation, both Helm profiles, every independently owned image, and an execution E2E
-  test with real PostgreSQL and RustFS persistence.
+- `.github/workflows/ci.yml`: validates PRs, synthetic merge-queue integration
+  commits, and protected `main`; automatic docs, config, and code lanes keep
+  lightweight changes fast while code/refactor changes retain compile, unit,
+  golden evaluation, contract, affected-image, and runtime E2E coverage.
 - `.github/workflows/release.yml`: builds and publishes versioned GHCR images and
   packages the Helm chart; a tag cannot become a GitHub Release until all ten
-  model-evaluation shards pass. Published images include provenance and SBOM
-  attestations.
-- [`docs/production-release.md`](docs/production-release.md): protected-branch,
-  SemVer promotion, verification, and rollback checklist.
+  live model-evaluation shards and the disposable integration/telemetry gate
+  pass. Published images include provenance and SBOM attestations. Configure the
+  optional `RELEASE_SLACK_WEBHOOK_URL` secret for release-channel results.
+- [`docs/production-release.md`](docs/production-release.md): scalable
+  trunk-based merge queue, immutable candidates, SemVer promotion, verification,
+  and rollback checklist.
 - `deploy/argocd/project.yaml` and `application.yaml`: scoped source/destination,
   automated prune/self-heal, retry policy, server-side apply, and independent
   Argo CD Image Updater digest tracking for every agent.

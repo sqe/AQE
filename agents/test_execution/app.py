@@ -14,6 +14,7 @@ import os
 import resource
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from a2a.utils import new_agent_text_message
 from observability.metrics import PrometheusMiddleware
+from prometheus_client import Counter, Histogram
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -51,6 +53,43 @@ REPAIR_LLM_URL = os.getenv("REPAIR_LLM_URL", "")
 REPAIR_LLM_MODEL = os.getenv("REPAIR_LLM_MODEL", "")
 REPAIR_LLM_API_KEY = os.getenv("REPAIR_LLM_API_KEY", "")
 TEST_EXECUTION_MODE = os.getenv("TEST_EXECUTION_MODE", "agent").lower()
+GRAPH_API_URL = os.getenv("GRAPH_API_URL", "http://aqe-diagnostics:8006/v1/graph/events")
+TEST_RUNS = Counter("aqe_test_runs_total", "Generated test runs", ("runner", "status"))
+TEST_RUN_DURATION = Histogram(
+    "aqe_test_run_duration_seconds",
+    "Generated test run duration including bounded repair",
+    ("runner",),
+)
+
+
+def decode_json_column(value: Any, expected_type: type, column: str) -> Any:
+    """Normalize asyncpg JSONB values without silently discarding malformed metadata."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{column} contains invalid JSON") from exc
+    if value is None:
+        return expected_type()
+    if not isinstance(value, expected_type):
+        raise ValueError(f"{column} must decode to {expected_type.__name__}")
+    return value
+
+
+async def _graph_event(kind: str, task_id: str, **fields: Any) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            await client.post(
+                GRAPH_API_URL,
+                json={
+                    "kind": kind,
+                    "task_id": task_id,
+                    "test_type": TEST_EXECUTION_MODE,
+                    **fields,
+                },
+            )
+    except httpx.HTTPError:
+        logger.warning("Live graph event could not be delivered", exc_info=True)
 
 
 def _sandbox_limits() -> None:
@@ -70,6 +109,10 @@ def _sandbox_limits() -> None:
 def _safe_environment() -> dict[str, str]:
     allowed = ("PATH", "PYTHONPATH", "PLAYWRIGHT_BROWSERS_PATH", "DISPLAY", "HOME", "LANG")
     environment = {key: os.environ[key] for key in allowed if key in os.environ}
+    runtime_root = str(Path(__file__).resolve().parents[2])
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (runtime_root, environment.get("PYTHONPATH")) if value
+    )
     environment.update(
         {
             key: value
@@ -120,8 +163,18 @@ def _summary_from_junit(report: Path) -> dict[str, int]:
     }
 
 
-async def execute_code(code: str) -> dict[str, Any]:
-    issues = inspect_test_code(code)
+async def execute_code(
+    code: str,
+    required_skills: list[str] | None = None,
+    required_dimensions_by_skill: dict[str, list[str]] | None = None,
+    require_semantic_names: bool = False,
+) -> dict[str, Any]:
+    issues = inspect_test_code(
+        code,
+        required_skills,
+        required_dimensions_by_skill,
+        require_semantic_names,
+    )
     if issues:
         return {
             "successful": False,
@@ -241,7 +294,8 @@ class TestExecutionAgentLogic:
             row = await connection.fetchrow(
                 """
                 SELECT object_path, target_agent_id, target_agent_version,
-                       target_agent_card_url, target_agent_skills, target_agent_profile, test_type
+                       target_agent_card_url, target_agent_skills, target_agent_profile, test_type,
+                       test_catalog
                 FROM test_runs WHERE task_id = $1
                 """,
                 task_id,
@@ -257,9 +311,16 @@ class TestExecutionAgentLogic:
             "id": row["target_agent_id"] or "unknown-agent",
             "version": row["target_agent_version"] or "unversioned",
             "card_url": row["target_agent_card_url"],
-            "skills": row["target_agent_skills"] or [],
-            "ontology_profile": row["target_agent_profile"] or {},
+            "skills": decode_json_column(row["target_agent_skills"], list, "target_agent_skills"),
+            "ontology_profile": decode_json_column(
+                row["target_agent_profile"], dict, "target_agent_profile"
+            ),
             "test_type": row["test_type"],
+            "test_catalog": (
+                decode_json_column(row["test_catalog"], dict, "test_catalog")
+                if row["test_catalog"] is not None
+                else None
+            ),
         }
         return object_name, await asyncio.to_thread(download), target
 
@@ -320,10 +381,19 @@ class TestExecutionAgentLogic:
                 f"{target['test_type']} test must run in the {target['test_type']} executor, "
                 f"not the {TEST_EXECUTION_MODE} executor"
             )
+        await _graph_event("test_started", task_id, target_agent=target)
         attempts: list[dict[str, Any]] = []
         repaired = False
+        started = time.perf_counter()
         for attempt_number in range(MAX_REPAIR_ATTEMPTS + 1):
-            result = await execute_code(code)
+            result = await execute_code(
+                code,
+                target["skills"] if TEST_EXECUTION_MODE == "agent" else None,
+                target["ontology_profile"].get("skill_test_dimensions")
+                if TEST_EXECUTION_MODE == "agent"
+                else None,
+                True,
+            )
             attempts.append({"attempt": attempt_number + 1, **result})
             if result["successful"] or not repair or attempt_number == MAX_REPAIR_ATTEMPTS:
                 break
@@ -334,10 +404,14 @@ class TestExecutionAgentLogic:
             repaired = True
 
         final = attempts[-1]
+        TEST_RUN_DURATION.labels(TEST_EXECUTION_MODE).observe(time.perf_counter() - started)
+        TEST_RUNS.labels(TEST_EXECUTION_MODE, "passed" if final["successful"] else "failed").inc()
         catalog = None
         catalog_error = None
         outcome = catalog_outcome(final, finding_disposition, finding_evidence)
-        if outcome:
+        if outcome and target.get("test_catalog"):
+            catalog = target["test_catalog"]
+        elif outcome:
             try:
                 catalog = await asyncio.to_thread(
                     publish_test,
@@ -355,6 +429,7 @@ class TestExecutionAgentLogic:
                     },
                     test_type=str(target["test_type"]),
                     outcome=outcome,
+                    source_revision=target["ontology_profile"].get("source_revision"),
                 )
             except Exception as exc:
                 catalog_error = str(exc)
@@ -377,6 +452,13 @@ class TestExecutionAgentLogic:
             catalog,
             finding_disposition,
             finding_evidence,
+        )
+        await _graph_event(
+            "test_completed",
+            task_id,
+            status="passed" if final["successful"] else "failed",
+            summary=final["summary"],
+            target_agent=target,
         )
         return response
 
@@ -438,6 +520,9 @@ async def run_tests(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=404)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
+    except Exception:
+        logger.exception("Unexpected test execution failure for task_id=%s", task_id)
+        return JSONResponse({"error": "internal test execution failure"}, status_code=500)
     return JSONResponse(result, status_code=200 if result["successful"] else 422)
 
 

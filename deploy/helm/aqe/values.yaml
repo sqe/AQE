@@ -13,6 +13,7 @@ agents:
   github-connector: {image: ghcr.io/sqe/aqe-github-connector:main, port: 8014}
   github-commit: {image: ghcr.io/sqe/aqe-github-commit:main, port: 8011}
   knowledge-ingestion: {image: ghcr.io/sqe/aqe-knowledge-ingestion:main, port: 8004}
+  quality-oracle: {image: ghcr.io/sqe/aqe-quality-oracle:main, port: 8017}
   test-generation: {image: ghcr.io/sqe/aqe-test-generation:main, port: 8001}
   test-execution: {image: ghcr.io/sqe/aqe-test-execution:main, port: 8003, testType: agent}
   webpage-state-capture: {image: ghcr.io/sqe/aqe-webpage-state-capture:main, port: 8002}
@@ -31,13 +32,15 @@ config:
   redisHost: redis
   kafkaBootstrapServers: kafka:9092
   temporalAddress: temporal-frontend.temporal.svc:7233
+  temporalTaskQueue: aqe-workflows
+  temporalUiUrl: http://127.0.0.1:18088
   registryUrl: http://platform-agentic-platform-registry.agentic-platform.svc:8001
   agentEndpoint: http://aqe-byoa:8009
   modelHealthUrl: ""
   githubSourceAllowedRepositories: ""
   agentProbeAllowedHosts: >-
     aqe-agent-builder,aqe-artifact-management,aqe-change-detection,aqe-dbt-builder,aqe-diagnostics,aqe-github-analysis,aqe-github-connector,
-    aqe-github-commit,aqe-knowledge-ingestion,aqe-test-generation,aqe-test-execution,
+    aqe-github-commit,aqe-knowledge-ingestion,aqe-quality-oracle,aqe-test-generation,aqe-test-execution,
     aqe-webpage-state-capture,aqe-website-execution,aqe-byoa
 
 resources:

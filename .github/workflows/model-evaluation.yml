@@ -5,6 +5,12 @@ on:
     - cron: "17 7 * * *"
   workflow_dispatch: {}
   workflow_call:
+    inputs:
+      require_live:
+        description: Fail instead of using the offline dataset when no serving model is configured
+        required: false
+        default: false
+        type: boolean
     secrets:
       EVAL_MODEL_URL: {required: false}
       EVAL_MODEL_API_KEY: {required: false}
@@ -17,6 +23,7 @@ jobs:
     runs-on: ${{ vars.EVAL_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
+      max-parallel: ${{ fromJSON(vars.EVAL_MAX_PARALLEL || '2') }}
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     env:
@@ -29,6 +36,11 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12", cache: pip}
       - run: pip install httpx
+      - name: Require a serving model for release evaluation
+        if: ${{ inputs.require_live && env.EVAL_MODEL_URL == '' }}
+        run: |
+          echo "EVAL_MODEL_URL is required for release evaluation" >&2
+          exit 1
       - name: Evaluate configured model
         if: ${{ env.EVAL_MODEL_URL != '' }}
         run: >-
@@ -36,7 +48,7 @@ jobs:
           --shard-index ${{ matrix.shard }} --shard-count 10
           --output evaluation-result-${{ matrix.shard }}.json
       - name: Validate golden dataset when no model secret is configured
-        if: ${{ env.EVAL_MODEL_URL == '' }}
+        if: ${{ env.EVAL_MODEL_URL == '' && !inputs.require_live }}
         run: >-
           python evaluation/run.py --minimum-score 1.0
           --shard-index ${{ matrix.shard }} --shard-count 10

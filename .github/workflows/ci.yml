@@ -1,12 +1,13 @@
 name: CI
 
 on:
-  pull_request: {}
+  pull_request:
+    branches: [main]
   merge_group: {}
   push: {branches: [main]}
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}
   cancel-in-progress: true
 
 permissions: {contents: read}
@@ -17,6 +18,7 @@ jobs:
     outputs:
       image_matrix: ${{ steps.select.outputs.image_matrix }}
       image_count: ${{ steps.select.outputs.image_count }}
+      lane: ${{ steps.select.outputs.lane }}
       run_e2e: ${{ steps.select.outputs.run_e2e }}
     steps:
       - uses: actions/checkout@v4
@@ -34,10 +36,34 @@ jobs:
           {
             echo "image_matrix=$(jq -c .image_matrix <<<"$selection")"
             echo "image_count=$(jq -r .image_count <<<"$selection")"
+            echo "lane=$(jq -r .lane <<<"$selection")"
             echo "run_e2e=$(jq -r .run_e2e <<<"$selection")"
           } >> "$GITHUB_OUTPUT"
 
+  fast-validation:
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Whitespace, policy-script, and YAML validation
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          python -m py_compile .github/scripts/ci-matrix.py
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' \
+            $(find .github deploy/argocd agents -type f \( -name '*.yml' -o -name '*.yaml' \))
+          if test -n "$BASE_SHA" && test "$BASE_SHA" != "0000000000000000000000000000000000000000"; then
+            git diff --check "$BASE_SHA" "$GITHUB_SHA"
+          else
+            git diff --check
+          fi
+      - name: Report verification lane
+        run: echo "Selected ${{ needs.changes.outputs.lane }} verification lane" >> "$GITHUB_STEP_SUMMARY"
+
   unit-and-evaluation:
+    if: needs.changes.outputs.lane == 'code'
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,6 +82,8 @@ jobs:
       - run: docker compose config --quiet
 
   helm-and-argocd:
+    if: needs.changes.outputs.lane != 'docs'
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +109,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix: ${{ fromJSON(needs.changes.outputs.image_matrix) }}
     steps:
       - uses: actions/checkout@v4
@@ -109,16 +138,18 @@ jobs:
     name: ci-gate
     if: always()
     runs-on: ubuntu-latest
-    needs: [changes, unit-and-evaluation, helm-and-argocd, image-builds, execution-e2e]
+    needs: [changes, fast-validation, unit-and-evaluation, helm-and-argocd, image-builds, execution-e2e]
     steps:
       - name: Require every CI workload
         env:
           UNIT_RESULT: ${{ needs.unit-and-evaluation.result }}
+          FAST_RESULT: ${{ needs.fast-validation.result }}
           HELM_RESULT: ${{ needs.helm-and-argocd.result }}
           IMAGES_RESULT: ${{ needs.image-builds.result }}
           E2E_RESULT: ${{ needs.execution-e2e.result }}
         run: |
-          test "$UNIT_RESULT" = success
-          test "$HELM_RESULT" = success
+          test "$FAST_RESULT" = success
+          test "$UNIT_RESULT" = success -o "$UNIT_RESULT" = skipped
+          test "$HELM_RESULT" = success -o "$HELM_RESULT" = skipped
           test "$IMAGES_RESULT" = success -o "$IMAGES_RESULT" = skipped
           test "$E2E_RESULT" = success -o "$E2E_RESULT" = skipped

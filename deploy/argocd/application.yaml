@@ -13,6 +13,7 @@ metadata:
       github-analysis=ghcr.io/sqe/aqe-github-analysis:main,
       github-commit=ghcr.io/sqe/aqe-github-commit:main,
       knowledge-ingestion=ghcr.io/sqe/aqe-knowledge-ingestion:main,
+      quality-oracle=ghcr.io/sqe/aqe-quality-oracle:main,
       test-generation=ghcr.io/sqe/aqe-test-generation:main,
       test-execution=ghcr.io/sqe/aqe-test-execution:main,
       webpage-state-capture=ghcr.io/sqe/aqe-webpage-state-capture:main,
@@ -29,6 +30,7 @@ metadata:
     argocd-image-updater.argoproj.io/github-analysis.helm.image-spec: agents.github-analysis.image
     argocd-image-updater.argoproj.io/github-commit.helm.image-spec: agents.github-commit.image
     argocd-image-updater.argoproj.io/knowledge-ingestion.helm.image-spec: agents.knowledge-ingestion.image
+    argocd-image-updater.argoproj.io/quality-oracle.helm.image-spec: agents.quality-oracle.image
     argocd-image-updater.argoproj.io/test-generation.helm.image-spec: agents.test-generation.image
     argocd-image-updater.argoproj.io/test-execution.helm.image-spec: agents.test-execution.image
     argocd-image-updater.argoproj.io/webpage-state-capture.helm.image-spec: agents.webpage-state-capture.image

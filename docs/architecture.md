@@ -15,6 +15,10 @@ flowchart LR
     BYOA --> WorkflowAPI
     WorkflowAPI --> Temporal[(Temporal)]
     Temporal --> Generator[Test generation agent]
+    Temporal --> Oracle[Quality Oracle gateway]
+    Generator --> Oracle
+    Oracle -->|approved candidate| AgentExecutor
+    Oracle -->|approved candidate| WebExecutor
     Temporal --> AgentExecutor[HTTP agent-test executor]
     Temporal --> WebExecutor[Playwright website-test executor]
     Diagnostics[Diagnostics agent] --> Generator
@@ -44,6 +48,7 @@ flowchart LR
 | BYOA adapter | Platform discovery, Kafka envelope normalization, correlated result publication | Test generation or execution logic |
 | Temporal workflow | Durable ordering, activity timeouts, retries, workflow identity | Test source or infrastructure credentials |
 | Generation agent | RAG grounding and domain-neutral Python test generation | Silently changing results after execution |
+| Quality Oracle | Independent semantic review, RAG/ontology provenance, risk gate, and structured approval evidence | Executing tests, inventing requirements, or silently approving an unavailable model |
 | Agent executor | Browser-free HTTP/Agent Card/A2A tests, static gate, bounded pytest, repair | Installing or invoking browser tooling |
 | Website executor | Playwright browser journeys, static gate, bounded pytest, repair | Agent protocol tests that belong in the HTTP runtime |
 | Diagnostics agent | Agent Card/skill contract checks, safe retry, recommendations | Unapproved restarts or cluster mutation |
@@ -71,8 +76,8 @@ flowchart LR
     Triage -->|test/environment/untriaged| Retain[Evidence only]
     Green --> Publisher[Scoped GitHub catalog publisher]
     Reproducer --> Publisher
-    Publisher --> Tests[generated-tests/type/agent/version]
-    Publisher --> Findings[generated-findings/type/agent/version]
+    Publisher --> Tests[generated-tests/runtime/layer/agent/release/git-revision]
+    Publisher --> Findings[generated-findings/runtime/layer/agent/release/git-revision]
     Tests --> Actions[GitHub continuous testing]
     Findings --> Actions
     Tests -. catalog URL .-> DB
@@ -171,6 +176,7 @@ sequenceDiagram
     participant API as Workflow API
     participant T as Temporal
     participant G as Generation agent
+    participant O as Quality Oracle
     participant R as RustFS
     participant DB as PostgreSQL
     participant E as Execution agent
@@ -184,7 +190,25 @@ sequenceDiagram
     G->>G: Generate domain-neutral pytest source
     G->>R: Store immutable candidate source
     G->>DB: Insert PENDING run + target agent metadata
-    G-->>T: task_id
+    G-->>T: task_id + grounding provenance
+    T->>O: Review candidate + exact RAG/ontology grounding
+    O->>R: Persist structured review evidence
+    alt Oracle approves
+        O-->>T: APPROVED with citations
+    else Oracle rejects
+        O-->>T: REJECTED / fail closed
+        T->>G: Regenerate once with structured Oracle feedback
+        G->>R: Store a new immutable candidate
+        T->>O: Review repaired candidate
+        alt Repaired candidate is approved
+            O-->>T: APPROVED with citations
+        else Repair is rejected
+            O-->>T: REJECTED / fail closed
+            T-->>Caller: Workflow failure with final review issues
+        end
+    else Oracle is unavailable
+        T-->>Caller: Workflow failure; unavailable review fails closed
+    end
     T->>E: execute_and_repair activity(task_id)
     E->>DB: Resolve RustFS path and target version
     E->>R: Read candidate source
@@ -280,7 +304,7 @@ flowchart TD
     Repair -- No --> Evidence[Persist failure evidence]
     Result -- Yes --> Persist[Persist validated source and result]
     Persist --> Catalog{GitHub catalog configured?}
-    Catalog -- Yes --> VersionPath[generated-tests/test-type/agent/version/test_task.py]
+    Catalog -- Yes --> VersionPath[generated-tests/runtime/layer/agent/release/git-revision/test_capability.py]
     Catalog -- No --> Done[Complete]
     VersionPath --> Done
 ```
@@ -328,7 +352,9 @@ agents across interaction style, interface, autonomy, sensitivity, and impact;
 defines universal obligations; and supplies archetype/risk-specific scenarios.
 Initial archetypes cover conversational, teaching/coaching,
 listening/transcription, finance, insurance, healthcare, retrieval/research,
-side-effecting action, multi-agent orchestration, and website/browser systems.
+side-effecting action, multi-agent orchestration, software quality engineering,
+and website/browser systems. `software_quality_engineering` is the stable
+ontology identifier; **AI Buster** is its product-facing name.
 
 ```mermaid
 flowchart TD
@@ -338,7 +364,15 @@ flowchart TD
     Embed --> Qdrant[(Qdrant product_knowledge collection)]
     Validate --> RustFS[(RustFS immutable ontology artifact)]
     RustFS --> Registry[(PostgreSQL AGENT_ONTOLOGY active version)]
-    Card[Agent Card, skills, scenario, network and risk labels] --> Select[Deterministic ontology selection]
+    Card[Agent Card identity, description, skills and tags] --> Classify[Deterministic ontology classification]
+    Classify --> Select[Applicable obligations]
+    Classify --> Families[Dynamic canonical fleet families]
+    Classify --> Unknown[Unclassified skill evidence]
+    Unknown --> Pattern[Recurring namespace pattern]
+    Pattern --> Candidate[Review-required emergent family]
+    Candidate -. approved versioned change .-> Source
+    Families --> RouteIndex[Capability-family routing index]
+    RouteIndex --> Members[Capability-matched family members]
     Qdrant --> Retrieve[Semantic product and ontology evidence]
     Select --> Prompt[Grounded generation prompt]
     Retrieve --> Prompt
@@ -350,6 +384,48 @@ ingestion replaces only `source=agent_ontology`. It never recreates the shared
 collection. Argo CD runs ontology ingestion after sync, and the generator also
 loads applicable ontology rules deterministically so test obligations are not
 left solely to model retrieval quality.
+
+The runtime overlay is intentionally dynamic but non-authoritative. A declared
+valid archetype takes precedence; otherwise whole-token and phrase evidence is
+scored from the card. Canonical classifications form a capability index that
+orchestrators can use for fleet routing. When two or more still-unclassified agents share a skill
+namespace, diagnostics exposes an emergent family candidate. Human review and a
+new ontology version are required before that candidate becomes policy.
+
+### AI Buster deep-agent validation
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant D as Diagnostics / AI Buster
+    participant C as Target Agent Card
+    participant T as Temporal
+    participant G as Test generator
+    participant E as Sandbox executor
+    participant M as Metrics and evidence
+    participant GH as GitHub regression catalog
+    D->>C: Discover identity, version, skills, invocation and golden oracles
+    D->>D: Classify archetype and fleet family
+    D->>T: Submit one scenario set per advertised executable skill
+    T->>G: Generate positive, schema, malformed-input and latency tests
+    opt Declared semantic oracle
+        T->>G: Add semantic-accuracy test
+    end
+    G->>E: Quality-gated atomic pytest
+    E->>M: Result, duration, protocol and semantic evidence
+    alt Every required dimension passes
+        E->>GH: Publish version-pinned semantic suite
+    else Test can be repaired without changing expectations
+        E->>G: Bounded repair with original oracle preserved
+    else Missing invocation or oracle
+        E->>M: Explicit coverage gap; no false pass
+    end
+```
+
+“100%” means every advertised executable skill has every contractually required
+dimension represented and passing. It cannot mean correctness of hidden,
+undocumented behavior; missing invocation metadata and expected business
+outcomes are reported instead of fabricated.
 
 ### GitHub source-analysis evidence
 
@@ -468,8 +544,8 @@ For versioned generation, pass the discovered identity alongside the scenario:
 After a passing run, AQE publishes:
 
 ```text
-generated-tests/agent/algebra-tutor/3.4.1/test_<task-id>.py
-generated-tests/agent/algebra-tutor/3.4.1/test_<task-id>.json
+generated-tests/agent/agentic/algebra-tutor/3.4.1/<git-revision>/test_lesson_explanation__<trace>.py
+generated-tests/agent/agentic/algebra-tutor/3.4.1/<git-revision>/test_lesson_explanation__<trace>.json
 ```
 
 ## 7. Live topology and test graph

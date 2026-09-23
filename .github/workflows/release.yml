@@ -16,15 +16,44 @@ permissions:
   id-token: write
 
 jobs:
+  release-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Require main or a tag reachable from main
+        run: |
+          git fetch origin main
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          else
+            test "$GITHUB_REF" = refs/heads/main
+          fi
+
   model-evaluation:
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-source
     uses: ./.github/workflows/model-evaluation.yml
+    with:
+      require_live: true
     secrets: inherit
 
+  candidate-integration:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run disposable integration environment and telemetry checks
+        run: test/e2e/run.sh
+
   images:
+    needs: release-source
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         include:
           - {name: agent-builder, dockerfile: agents/agent_builder/Dockerfile}
@@ -36,6 +65,7 @@ jobs:
           - {name: github-connector, dockerfile: agents/github_connector/Dockerfile}
           - {name: github-commit, dockerfile: agents/github_commit/Dockerfile}
           - {name: knowledge-ingestion, dockerfile: agents/knowledge_ingestion/Dockerfile}
+          - {name: quality-oracle, dockerfile: agents/quality_oracle/Dockerfile}
           - {name: test-generation, dockerfile: agents/test_generation/Dockerfile}
           - {name: test-execution, dockerfile: agents/test_execution/Dockerfile}
           - {name: webpage-state-capture, dockerfile: agents/webpage_state_capture/Dockerfile}
@@ -87,7 +117,7 @@ jobs:
   general-availability:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: [model-evaluation, images, chart]
+    needs: [model-evaluation, candidate-integration, images, chart]
     permissions:
       contents: write
     steps:
@@ -106,3 +136,23 @@ jobs:
             --generate-notes \
             --title "AQE $GITHUB_REF_NAME" \
             dist/*.tgz dist/SHA256SUMS
+
+  release-notification:
+    if: always() && startsWith(github.ref, 'refs/tags/v')
+    needs: [model-evaluation, candidate-integration, images, chart, general-availability]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release result to Slack when configured
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.RELEASE_SLACK_WEBHOOK_URL }}
+          MODEL_RESULT: ${{ needs.model-evaluation.result }}
+          INTEGRATION_RESULT: ${{ needs.candidate-integration.result }}
+          IMAGE_RESULT: ${{ needs.images.result }}
+          CHART_RESULT: ${{ needs.chart.result }}
+          GA_RESULT: ${{ needs.general-availability.result }}
+        run: |
+          summary="AQE ${GITHUB_REF_NAME}: GA=${GA_RESULT}, model=${MODEL_RESULT}, integration=${INTEGRATION_RESULT}, images=${IMAGE_RESULT}, chart=${CHART_RESULT}"
+          echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+          test -z "$SLACK_WEBHOOK_URL" && exit 0
+          jq -n --arg text "$summary — ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" '{text:$text}' > /tmp/slack.json
+          curl --fail --silent --show-error -H 'content-type: application/json' --data @/tmp/slack.json "$SLACK_WEBHOOK_URL"

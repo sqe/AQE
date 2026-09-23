@@ -32,6 +32,8 @@ spec:
           ports: [{name: http, containerPort: {{ $service.port }} }]
           env:
             - {name: TEMPORAL_ADDRESS, value: {{ $root.Values.config.temporalAddress | quote }}}
+            - {name: TEMPORAL_TASK_QUEUE, value: {{ default "aqe-workflows" $root.Values.config.temporalTaskQueue | quote }}}
+            - {name: TEMPORAL_UI_URL, value: {{ $root.Values.config.temporalUiUrl | quote }}}
             - {name: REGISTRY_URL, value: {{ $root.Values.config.registryUrl | quote }}}
             - {name: AGENT_ENDPOINT, value: {{ $root.Values.config.agentEndpoint | quote }}}
             - {name: AQE_WORKFLOW_URL, value: "http://aqe-workflow-api:8008/v1/qe-runs"}
@@ -83,11 +85,14 @@ spec:
           command: [python, -m, temporal_worker.worker]
           env:
             - {name: TEMPORAL_ADDRESS, value: {{ .Values.config.temporalAddress | quote }}}
+            - {name: TEMPORAL_TASK_QUEUE, value: {{ default "aqe-workflows" .Values.config.temporalTaskQueue | quote }}}
             - {name: TEST_GENERATION_URL, value: "http://aqe-test-generation:8001/generate_test_plan"}
             - {name: AGENT_TEST_EXECUTION_URL, value: "http://aqe-test-execution:8003/run_tests"}
             - {name: WEBSITE_TEST_EXECUTION_URL, value: "http://aqe-website-execution:8013/run_tests"}
             - {name: SOURCE_ANALYSIS_URL, value: "http://aqe-github-analysis:8010/v1/analyze"}
             - {name: AGENT_DISCOVERY_URL, value: "http://aqe-diagnostics:8006/v1/agent-discovery"}
+            - {name: QUALITY_ORACLE_URL, value: "http://aqe-quality-oracle:8017/v1/reviews"}
+            - {name: GRAPH_EVENTS_URL, value: "http://aqe-diagnostics:8006/v1/graph/events"}
           resources: {{ toYaml .Values.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false

@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from observability.metrics import PrometheusMiddleware
 from prometheus_client import Gauge
+from utils.agent_ontology import classify_agent, discover_fleet_patterns
 
 
 DEFAULT_AGENT_CARDS = {
@@ -30,6 +31,7 @@ DEFAULT_AGENT_CARDS = {
     "test-execution": "http://test_execution_agent:8003/agent_card",
     "website-execution": "http://website_test_execution_agent:8013/agent_card",
     "knowledge-ingestion": "http://llm_fine_tuning_agent:8004/agent_card",
+    "quality-oracle": "http://quality_oracle_agent:8017/agent_card",
     "aqe-byoa": "http://aqe_byoa:8009/.well-known/agent.json",
 }
 EXPECTED_INTERNAL_SKILLS = {
@@ -42,6 +44,7 @@ EXPECTED_INTERNAL_SKILLS = {
     "github-connector": ["github.tools.list", "github.tools.call"],
     "github-commit": ["start_commit_consumer"],
     "knowledge-ingestion": ["ingest_knowledge", "ingest_ontology"],
+    "quality-oracle": ["oracle.review.generated_test"],
     "test-generation": ["generate_tests"],
     "test-execution": ["qe.validate", "qe.repair"],
     "webpage-state-capture": ["capture_state"],
@@ -74,7 +77,12 @@ def _allowed(url: str) -> bool:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
         return False
     allowed = {host.strip() for host in os.getenv("AGENT_PROBE_ALLOWED_HOSTS", "").split(",") if host.strip()}
-    return "*" in allowed or parsed.hostname in allowed
+    configured_hosts = {
+        urlparse(card_url).hostname
+        for card_url in configured_cards().values()
+        if urlparse(card_url).hostname
+    }
+    return "*" in allowed or parsed.hostname in allowed or parsed.hostname in configured_hosts
 
 
 def _skills(card: dict[str, Any]) -> set[str]:
@@ -94,35 +102,65 @@ def _evaluation_scenarios(
     """Build measurable scenarios without inventing expected domain answers."""
     evaluation = card.get("evaluation") if isinstance(card.get("evaluation"), dict) else {}
     declared_cases = evaluation.get("cases", [])
-    cases_by_skill = {
-        str(case.get("skill_id")): case
-        for case in declared_cases
-        if isinstance(case, dict) and case.get("skill_id") and case.get("prompt")
-    }
     scenarios: list[dict[str, Any]] = []
     for skill in card.get("skills", []):
         if not isinstance(skill, dict) or not skill.get("id"):
             continue
         skill_id = str(skill["id"])
-        declared = cases_by_skill.get(skill_id)
+        matching_cases = [
+            case
+            for case in declared_cases
+            if isinstance(case, dict) and str(case.get("skill_id")) == skill_id
+        ]
+        if not matching_cases:
+            matching_cases = [{}]
         examples = skill.get("examples", [])
-        prompt = declared.get("prompt") if declared else (examples[0] if examples else None)
-        expected = declared.get("expected_response") if declared else None
-        scenarios.append(
-            {
-                "skill_id": skill_id,
-                "prompt": prompt,
-                "expected_response": expected,
-                "max_latency_ms": int(
-                    (declared or {}).get("max_latency_ms", default_max_latency_ms)
-                ),
-                "min_accuracy": float(
-                    (declared or {}).get("min_accuracy", default_min_accuracy)
-                ),
-                "evaluation_mode": "semantic_accuracy" if expected is not None else "protocol_only",
-                "oracle_status": "declared" if expected is not None else "requirements_needed",
-            }
-        )
+        for case_index, declared in enumerate(matching_cases):
+            prompt = declared.get("prompt") or (examples[case_index] if case_index < len(examples) else None)
+            expected = declared.get("expected_response")
+            invocation = declared.get("invocation") or skill.get("invocation")
+            if invocation is None and card.get("url"):
+                invocation = {
+                    "protocol": "a2a_jsonrpc",
+                    "url": card["url"],
+                    "method": "tasks.execute",
+                }
+            contract_gaps = []
+            if not isinstance(invocation, dict) or not invocation.get("url"):
+                contract_gaps.append("invocation")
+            if prompt is None:
+                contract_gaps.append("prompt")
+            if expected is None:
+                contract_gaps.append("semantic_oracle")
+            declared_dimensions = declared.get("required_dimensions")
+            dimensions = (
+                declared_dimensions
+                if isinstance(declared_dimensions, list) and declared_dimensions
+                else ["positive", "protocol_schema", "malformed_input", "latency"]
+            )
+            required_dimensions = list(
+                dict.fromkeys([*dimensions, *(["semantic_accuracy"] if expected is not None else [])])
+            )
+            scenarios.append(
+                {
+                    "scenario_id": str(declared.get("id") or f"{skill_id}-{case_index + 1}"),
+                    "skill_id": skill_id,
+                    "prompt": prompt,
+                    "expected_response": expected,
+                    "invocation": invocation,
+                    "required_dimensions": required_dimensions,
+                    "max_latency_ms": int(
+                        declared.get("max_latency_ms", default_max_latency_ms)
+                    ),
+                    "min_accuracy": float(
+                        declared.get("min_accuracy", default_min_accuracy)
+                    ),
+                    "evaluation_mode": "semantic_accuracy" if expected is not None else "protocol_only",
+                    "oracle_status": "declared" if expected is not None else "requirements_needed",
+                    "execution_status": "executable" if not set(contract_gaps) - {"semantic_oracle"} else "requirements_needed",
+                    "contract_gaps": contract_gaps,
+                }
+            )
     return scenarios
 
 
@@ -181,6 +219,16 @@ async def discover_agents(
         "summary": {
             "discovered": len(agents),
             "testable_scenarios": sum(len(agent.get("scenarios", [])) for agent in agents),
+            "executable_scenarios": sum(
+                scenario.get("execution_status") == "executable"
+                for agent in agents
+                for scenario in agent.get("scenarios", [])
+            ),
+            "missing_execution_contracts": sum(
+                scenario.get("execution_status") == "requirements_needed"
+                for agent in agents
+                for scenario in agent.get("scenarios", [])
+            ),
             "missing_oracles": sum(
                 scenario.get("oracle_status") == "requirements_needed"
                 for agent in agents
@@ -212,7 +260,7 @@ async def probe_card(
         available = _skills(card)
         missing = sorted(set(expected_skills or []) - available)
         identity = card.get("name") or card.get("agent_id")
-        ontology = card.get("ontology")
+        classification = classify_agent({"probe_name": name, **card})
         declared_status = str(card.get("status", "UP")).upper()
         status = "healthy" if identity and not missing and declared_status not in {"DEGRADED", "DOWN", "FAILED"} else "degraded"
         recommendation = None
@@ -229,7 +277,10 @@ async def probe_card(
             "identity": identity,
             "version": card.get("version"),
             "skills": sorted(available),
-            "archetype": card.get("archetype") or (ontology.get("archetype") if isinstance(ontology, dict) else None),
+            "archetype": classification["archetype"],
+            "ontology_label": classification["label"],
+            "ontology_product_name": classification["product_name"],
+            "ontology_classification": classification,
             "missing_skills": missing,
             "recommendation": recommendation,
         }
@@ -250,11 +301,13 @@ async def scan() -> dict[str, Any]:
         )
     )
     healthy = sum(result["status"] == "healthy" for result in results)
+    families = discover_fleet_patterns(results)
     return {
         "status": "healthy" if healthy == len(results) else "degraded",
         "healthy": healthy,
         "total": len(results),
         "agents": results,
+        "ontology_families": families,
     }
 
 
@@ -268,10 +321,25 @@ def _base_graph(fleet: dict[str, Any]) -> dict[str, Any]:
             "version": agent.get("version"),
             "skills": agent.get("skills", []),
             "archetype": agent.get("archetype"),
+            "ontology_label": agent.get("ontology_label"),
+            "ontology_product_name": agent.get("ontology_product_name"),
         }
         for agent in fleet["agents"]
     ]
     nodes.extend(OBSERVED_AGENTS.values())
+    nodes.extend(
+        {
+            "id": f"family:{family['id']}",
+            "name": family.get("product_name") or family["label"],
+            "type": "agent_family",
+            "status": "review-required" if family["review_required"] else "classified",
+            "archetype": family.get("archetype"),
+            "ontology_label": family["label"],
+            "ontology_product_name": family.get("product_name"),
+            "skills": family["capabilities"],
+        }
+        for family in fleet.get("ontology_families", [])
+    )
     nodes.extend(
         [
             {"id": "system:temporal", "name": "Temporal", "type": "orchestrator", "status": "configured"},
@@ -287,6 +355,8 @@ def _base_graph(fleet: dict[str, Any]) -> dict[str, Any]:
         {"source": "agent:github-analysis", "target": "agent:test-generation", "type": "source_evidence"},
         {"source": "agent:test-generation", "target": "store:qdrant", "type": "retrieve_evidence"},
         {"source": "agent:test-generation", "target": "store:rustfs", "type": "write_candidate"},
+        {"source": "agent:test-generation", "target": "agent:quality-oracle", "type": "request_grounded_review"},
+        {"source": "agent:quality-oracle", "target": "agent:test-execution", "type": "approve_for_execution"},
         {"source": "system:temporal", "target": "agent:test-execution", "type": "dispatch_agent_test"},
         {"source": "system:temporal", "target": "agent:website-execution", "type": "dispatch_website_test"},
         {"source": "agent:test-execution", "target": "catalog:github", "type": "publish_passed_test"},
@@ -294,15 +364,35 @@ def _base_graph(fleet: dict[str, Any]) -> dict[str, Any]:
         {"source": "agent:test-execution", "target": "store:postgres", "type": "persist_result"},
         {"source": "agent:website-execution", "target": "store:postgres", "type": "persist_result"},
     ]
-    for event in GRAPH_EVENTS:
+    agent_names_by_identity = {
+        str(agent.get("identity") or agent["name"]): agent["name"] for agent in fleet["agents"]
+    }
+    for family in fleet.get("ontology_families", []):
+        family_id = f"family:{family['id']}"
+        edges.extend(
+            {
+                "source": family_id,
+                "target": f"agent:{agent_names_by_identity[member]}",
+                "type": "capability_member",
+            }
+            for member in family["members"]
+            if member in agent_names_by_identity
+        )
+    # Events are stored newest-first. Apply oldest-first so the latest node
+    # status wins when generation and execution update the same test node.
+    for event in reversed(GRAPH_EVENTS):
         nodes.extend(event.get("nodes", []))
         edges.extend(event.get("edges", []))
     unique_nodes = {node["id"]: node for node in nodes}
+    unique_edges = {
+        (edge["source"], edge["target"], edge["type"]): edge
+        for edge in edges
+    }
     return {
         "nodes": list(unique_nodes.values()),
-        "edges": edges,
+        "edges": list(unique_edges.values()),
         "events": list(GRAPH_EVENTS),
-        "stats": {"node_count": len(unique_nodes), "edge_count": len(edges)},
+        "stats": {"node_count": len(unique_nodes), "edge_count": len(unique_edges)},
     }
 
 
@@ -369,24 +459,95 @@ async def record_evaluation(result: dict[str, Any]) -> dict[str, str]:
 
 @app.post("/v1/graph/events", status_code=202)
 async def graph_event(event: dict[str, Any]) -> dict[str, str]:
-    if event.get("kind") != "test_generated" or not event.get("task_id"):
-        raise HTTPException(status_code=400, detail="kind=test_generated and task_id are required")
+    kind = str(event.get("kind", ""))
+    test_kinds = {"test_generated", "test_started", "test_completed"}
+    workflow_kinds = {
+        "workflow_started",
+        "agent_discovery_started",
+        "source_analysis_started",
+        "test_generation_started",
+        "oracle_review_started",
+        "test_execution_started",
+        "workflow_completed",
+    }
+    reference_id = event.get("task_id") or event.get("workflow_id")
+    if kind not in test_kinds | workflow_kinds or not reference_id:
+        raise HTTPException(
+            status_code=400,
+            detail="a supported event kind and task_id or workflow_id are required",
+        )
+    if kind in workflow_kinds:
+        workflow_id = str(event.get("workflow_id") or reference_id)
+        test_type = str(event.get("test_type", "agent"))
+        executor = "website-execution" if test_type == "website" else "test-execution"
+        routes = {
+            "workflow_started": ("system:temporal", "agent:diagnostics", "campaign_started"),
+            "agent_discovery_started": ("system:temporal", "agent:diagnostics", "discover_agent"),
+            "source_analysis_started": ("system:temporal", "agent:github-analysis", "inspect_source"),
+            "test_generation_started": ("system:temporal", "agent:test-generation", "generate_tests"),
+            "oracle_review_started": ("agent:test-generation", "agent:quality-oracle", "request_grounded_review"),
+            "test_execution_started": ("agent:quality-oracle", f"agent:{executor}", "approve_for_execution"),
+            "workflow_completed": (f"agent:{executor}", "catalog:github", "publish_passed_test"),
+        }
+        source, target_id, interaction = routes[kind]
+        status = str(event.get("status") or ("completed" if kind == "workflow_completed" else "running"))
+        workflow_node = {
+            "id": f"workflow:{workflow_id}",
+            "name": workflow_id,
+            "type": "workflow",
+            "status": status,
+            "test_type": test_type,
+            "summary": event.get("summary") or {},
+        }
+        edges = [{"source": source, "target": target_id, "type": interaction}]
+        recorded_at = datetime.now(timezone.utc).isoformat()
+        GRAPH_EVENTS.appendleft(
+            {
+                "id": f"{kind}:{workflow_id}:{recorded_at}",
+                "kind": kind,
+                "timestamp": recorded_at,
+                "status": status,
+                "workflow_id": workflow_id,
+                "task_id": event.get("task_id"),
+                "test_type": test_type,
+                "summary": event.get("summary") or {},
+                "nodes": [workflow_node],
+                "edges": edges,
+            }
+        )
+        return {"status": "accepted", "event_id": f"{kind}:{workflow_id}"}
+
     task_id = str(event["task_id"])
     test_type = str(event.get("test_type", "agent"))
     target = event.get("target_agent") or {}
+    status = {
+        "test_generated": "queued",
+        "test_started": "running",
+        "test_completed": str(event.get("status", "completed")),
+    }[kind]
     test_node = {
         "id": f"test:{task_id}",
         "name": f"{test_type} test {task_id[:8]}",
         "type": "generated_test",
-        "status": "pending",
+        "status": status,
         "test_type": test_type,
         "archetype": event.get("agent_archetype"),
+        "summary": event.get("summary") or {},
     }
-    executor = "website-execution" if test_type == "website" else "agent-execution"
-    edges = [
-        {"source": "agent:test-generation", "target": test_node["id"], "type": "generated"},
-        {"source": test_node["id"], "target": f"agent:{executor}", "type": "routed_to"},
-    ]
+    executor = "website-execution" if test_type == "website" else "test-execution"
+    if kind == "test_generated":
+        edges = [
+            {"source": "agent:test-generation", "target": test_node["id"], "type": "generated"},
+            {"source": test_node["id"], "target": f"agent:{executor}", "type": "routed_to"},
+        ]
+    else:
+        edges = [
+            {
+                "source": f"agent:{executor}",
+                "target": test_node["id"],
+                "type": "executing" if kind == "test_started" else status,
+            }
+        ]
     if target.get("id"):
         target_id = f"target:{target['id']}"
         OBSERVED_AGENTS[target_id] = {
@@ -400,14 +561,18 @@ async def graph_event(event: dict[str, Any]) -> dict[str, str]:
         edges.append({"source": test_node["id"], "target": target_id, "type": "validates"})
     GRAPH_EVENTS.appendleft(
         {
-            "id": f"generation:{task_id}",
-            "kind": "test_generated",
+            "id": f"{kind}:{task_id}",
+            "kind": kind,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": status,
+            "task_id": task_id,
+            "test_type": test_type,
+            "summary": event.get("summary") or {},
             "nodes": [test_node],
             "edges": edges,
         }
     )
-    return {"status": "accepted", "event_id": f"generation:{task_id}"}
+    return {"status": "accepted", "event_id": f"{kind}:{task_id}"}
 
 
 @app.post("/v1/diagnostics/heal")
@@ -439,6 +604,8 @@ async def agent_probe(request: dict[str, Any]) -> dict[str, Any]:
             "version": result.get("version"),
             "skills": result.get("skills", []),
             "archetype": result.get("archetype"),
+            "ontology_label": result.get("ontology_label"),
+            "ontology_product_name": result.get("ontology_product_name"),
         }
     invocation = request.get("invocation")
     if invocation is None or result["status"] != "healthy":
