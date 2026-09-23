@@ -1,0 +1,47 @@
+{
+  "finding_evidence": null,
+  "outcome": "validated",
+  "repaired": false,
+  "summary": {
+    "errors": 0,
+    "failed": 0,
+    "passed": 24,
+    "skipped": 0,
+    "tests": 24
+  },
+  "target_agent": {
+    "card_url": "http://aqe-knowledge-ingestion:8004/agent_card",
+    "id": "LLMKnowledgeIngestionAgent",
+    "ontology_profile": {
+      "agent_archetype": "retrieval_research",
+      "generation_fingerprint": "e6a6d1515cdaa85d65ae69a26ec24e436405d8f5dd7f9830f4dd32a22bf4ccbc",
+      "generation_policy_version": "agent-suite-v5",
+      "skill_test_dimensions": {
+        "ingest_knowledge": [
+          "latency",
+          "positive",
+          "protocol_schema",
+          "semantic_accuracy",
+          "state_isolation"
+        ],
+        "ingest_ontology": [
+          "latency",
+          "positive",
+          "protocol_schema",
+          "semantic_accuracy",
+          "state_isolation"
+        ]
+      },
+      "source_repository": "",
+      "source_revision": null
+    },
+    "skills": [
+      "ingest_knowledge",
+      "ingest_ontology"
+    ],
+    "test_catalog": null,
+    "test_type": "agent",
+    "version": "1.0.0"
+  },
+  "task_id": "3d8d349d-db1a-4cff-9f65-edd09e5b3f4d"
+}
