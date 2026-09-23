@@ -1,0 +1,21 @@
+{
+  "finding_evidence": null,
+  "outcome": "validated",
+  "repaired": false,
+  "summary": {
+    "errors": 0,
+    "failed": 0,
+    "passed": 3,
+    "skipped": 0,
+    "tests": 3
+  },
+  "target_agent": {
+    "card_url": "http://aqe-diagnostics:8006/agent_card",
+    "id": "default-agent-app",
+    "ontology_profile": "{}",
+    "skills": "[]",
+    "test_type": "agent",
+    "version": "2.0.0"
+  },
+  "task_id": "9d23d90a-a752-44ce-b541-d9b06e16f8bc"
+}
