@@ -1,0 +1,96 @@
+name: Promote verified candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Final SemVer tag, for example v2.1.0
+        required: true
+        type: string
+      candidate_sha:
+        description: Full main commit deployed to the candidate environment
+        required: true
+        type: string
+      fleet_workflow_id:
+        description: Completed Autopilot fleet workflow ID
+        required: true
+        type: string
+      namespace:
+        description: Kubernetes namespace containing the candidate
+        required: true
+        default: aqe
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: promote-release
+  cancel-in-progress: false
+
+jobs:
+  verify-and-tag:
+    environment: release
+    runs-on: ${{ vars.E2E_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.candidate_sha }}
+      - name: Validate version and protected-main ancestry
+        env:
+          VERSION: ${{ inputs.version }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git fetch origin main --tags
+          git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main
+          ! git rev-parse "$VERSION" >/dev/null 2>&1
+      - name: Require successful immutable-image build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          conclusion=$(gh run list --workflow release.yml --branch main --commit "$CANDIDATE_SHA" \
+            --limit 1 --json conclusion --jq '.[0].conclusion // "missing"')
+          test "$conclusion" = success
+      - name: Verify deployed candidate, model, and Autopilot result
+        env:
+          NAMESPACE: ${{ inputs.namespace }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          FLEET_WORKFLOW_ID: ${{ inputs.fleet_workflow_id }}
+        run: |
+          tag="sha-${CANDIDATE_SHA:0:7}"
+          kubectl -n "$NAMESPACE" get deployment -o json > /tmp/deployments.json
+          python .github/scripts/verify-release-candidate.py deployments /tmp/deployments.json "$tag"
+          kubectl -n "$NAMESPACE" exec deployment/aqe-frontend -- \
+            wget -qO- http://aqe-test-generation:8001/health > /tmp/model-health.json
+          python .github/scripts/verify-release-candidate.py model /tmp/model-health.json
+          kubectl -n "$NAMESPACE" exec deployment/aqe-frontend -- \
+            wget -qO- "http://aqe-workflow-api:8008/v1/qe-runs/$FLEET_WORKFLOW_ID" > /tmp/fleet.json
+          python .github/scripts/verify-release-candidate.py fleet /tmp/fleet.json
+      - name: Require catalog CI for current generated-test head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          catalog_sha=$(git ls-remote origin refs/heads/aqe-generated-tests | awk '{print $1}')
+          test -n "$catalog_sha"
+          git fetch origin aqe-generated-tests
+          python .github/scripts/verify-release-candidate.py catalog-commits /tmp/fleet.json > /tmp/catalog-commits
+          test -s /tmp/catalog-commits
+          while read -r commit; do
+            git merge-base --is-ancestor "$commit" "$catalog_sha"
+          done < /tmp/catalog-commits
+          conclusion=$(gh run list --workflow generated-tests.yml --branch aqe-generated-tests \
+            --commit "$catalog_sha" --limit 1 --json conclusion --jq '.[0].conclusion // "missing"')
+          test "$conclusion" = success
+      - name: Create final release tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a "$VERSION" -m "AQE $VERSION"
+          git push origin "$VERSION"

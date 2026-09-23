@@ -88,7 +88,8 @@ async def llm_provider_status(
     if normalized_mode == "GEMINI":
         configured = bool(api_key)
         model = GEMINI_GENERATION_MODEL
-        url = f"{GEMINI_API_BASE_URL}/models/{model}?key={api_key}"
+        url = f"{GEMINI_API_BASE_URL}/models/{model}"
+        headers = {"x-goog-api-key": api_key}
     else:
         normalized_mode = "SELF_HOSTED"
         configured = bool(generation_endpoint)
@@ -96,6 +97,7 @@ async def llm_provider_status(
         parsed = urlparse(generation_endpoint)
         path_prefix = parsed.path.partition("/v1/")[0]
         url = urlunparse(parsed._replace(path=f"{path_prefix}/v1/models", query="", fragment=""))
+        headers = None
     if not configured:
         return {"mode": normalized_mode, "configured": False, "status": "not_configured", "model": model}
 
@@ -103,7 +105,7 @@ async def llm_provider_status(
     owns_client = client is None
     probe_client = client or httpx.AsyncClient(timeout=10, follow_redirects=False)
     try:
-        response = await probe_client.get(url)
+        response = await probe_client.get(url, headers=headers)
         response.raise_for_status()
         return {
             "mode": normalized_mode,
@@ -454,7 +456,7 @@ class LLMServiceClient:
     async def get_embedding(self, text: str) -> List[float]:
         """Calls the configured embedding model asynchronously."""
         if self.mode == 'GEMINI':
-            url = f"{GEMINI_API_BASE_URL}/models/{GEMINI_EMBEDDING_MODEL}:embedContent?key={self.api_key}"
+            url = f"{GEMINI_API_BASE_URL}/models/{GEMINI_EMBEDDING_MODEL}:embedContent"
             payload = {
                 "model": GEMINI_EMBEDDING_MODEL,
                 "content": {"parts": [{"text": text}]},
@@ -462,7 +464,7 @@ class LLMServiceClient:
             }
             
             try:
-                response = await self.client.post(url, json=payload)
+                response = await self.client.post(url, json=payload, headers={"x-goog-api-key": self.api_key})
                 response.raise_for_status()
                 return response.json()['embedding']['values']
             except Exception as e:
@@ -496,14 +498,14 @@ class LLMServiceClient:
     async def generate_code(self, prompt: str) -> str:
         """Calls the configured generation model asynchronously."""
         if self.mode == 'GEMINI':
-            url = f"{GEMINI_API_BASE_URL}/models/{GEMINI_GENERATION_MODEL}:generateContent?key={self.api_key}"
+            url = f"{GEMINI_API_BASE_URL}/models/{GEMINI_GENERATION_MODEL}:generateContent"
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.1}
             }
             
             try:
-                response = await self.client.post(url, json=payload)
+                response = await self.client.post(url, json=payload, headers={"x-goog-api-key": self.api_key})
                 response.raise_for_status()
                 candidate = response.json().get('candidates', [{}])[0]
                 return candidate.get('content', {}).get('parts', [{}])[0].get('text', "# Gemini generation failed.")

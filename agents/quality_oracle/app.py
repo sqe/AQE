@@ -133,11 +133,12 @@ async def _reason(prompt: str) -> str:
                 raise RuntimeError("ORACLE_GEMINI_API_KEY or GEMINI_API_KEY is not configured")
             model = MODEL or "gemini-2.5-pro"
             response = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"temperature": 0.0, "maxOutputTokens": 4096},
                 },
+                headers={"x-goog-api-key": GEMINI_API_KEY},
             )
             response.raise_for_status()
             return response.json()["candidates"][0]["content"]["parts"][0]["text"]

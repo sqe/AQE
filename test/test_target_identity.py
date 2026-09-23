@@ -61,7 +61,8 @@ def test_self_hosted_provider_connectivity_uses_models_endpoint():
 
 def test_gemini_provider_connectivity_validates_key_without_exposing_it():
     async def respond(request):
-        assert request.url.params["key"] == "secret-key"
+        assert request.headers["x-goog-api-key"] == "secret-key"
+        assert "secret-key" not in str(request.url)
         return httpx.Response(200, json={"name": "models/gemini-2.5-flash"})
 
     async def check():

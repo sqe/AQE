@@ -84,6 +84,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/metadata-action@v5
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         id: meta
         with:
           images: ghcr.io/${{ github.repository_owner }}/aqe-${{ matrix.name }}
@@ -92,6 +93,7 @@ jobs:
             type=ref,event=tag
             type=sha
       - uses: docker/build-push-action@v6
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -103,6 +105,14 @@ jobs:
           sbom: true
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: Promote verified SHA manifest without rebuilding
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/aqe-${{ matrix.name }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          sha_tag="sha-${GITHUB_SHA::7}"
+          docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE:$sha_tag"
 
   chart:
     runs-on: ubuntu-latest
