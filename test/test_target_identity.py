@@ -2,6 +2,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from agents.test_generation import app
@@ -10,6 +11,7 @@ from agents.test_generation.app import (
     compile_declared_github_mcp_suite,
     generate_tests_handler,
     generation_fingerprint,
+    llm_provider_status,
     resolve_target_identity,
 )
 from agents.test_execution.test_quality import inspect_test_code
@@ -34,6 +36,60 @@ def test_agent_card_hostname_is_stable_fallback():
 def test_missing_target_identity_never_uses_generic_app_name():
     with pytest.raises(ValueError, match="stable target agent identity"):
         resolve_target_identity({})
+
+
+def test_self_hosted_provider_connectivity_uses_models_endpoint():
+    async def respond(request):
+        assert request.url.path == "/v1/models"
+        return httpx.Response(200, json={"data": []})
+
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await llm_provider_status(
+                mode="SELF_HOSTED",
+                api_key="",
+                generation_endpoint="http://model.internal:1234/v1/chat/completions",
+                client=client,
+            )
+
+    result = asyncio.run(check())
+
+    assert result["mode"] == "SELF_HOSTED"
+    assert result["status"] == "connected"
+    assert result["configured"] is True
+
+
+def test_gemini_provider_connectivity_validates_key_without_exposing_it():
+    async def respond(request):
+        assert request.url.params["key"] == "secret-key"
+        return httpx.Response(200, json={"name": "models/gemini-2.5-flash"})
+
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await llm_provider_status(
+                mode="GEMINI",
+                api_key="secret-key",
+                generation_endpoint="",
+                client=client,
+            )
+
+    result = asyncio.run(check())
+
+    assert result["status"] == "connected"
+    assert "secret-key" not in json.dumps(result)
+
+
+def test_gemini_provider_reports_missing_configuration_without_network_call():
+    result = asyncio.run(
+        llm_provider_status(mode="GEMINI", api_key="", generation_endpoint="")
+    )
+
+    assert result == {
+        "mode": "GEMINI",
+        "configured": False,
+        "status": "not_configured",
+        "model": app.GEMINI_GENERATION_MODEL,
+    }
 
 
 def test_generation_endpoint_preserves_artifact_provenance(monkeypatch):

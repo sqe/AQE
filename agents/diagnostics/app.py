@@ -302,13 +302,29 @@ async def scan() -> dict[str, Any]:
     )
     healthy = sum(result["status"] == "healthy" for result in results)
     families = discover_fleet_patterns(results)
+    model_provider = await probe_model_provider()
     return {
-        "status": "healthy" if healthy == len(results) else "degraded",
+        "status": "healthy" if healthy == len(results) and model_provider.get("status") == "connected" else "degraded",
         "healthy": healthy,
         "total": len(results),
         "agents": results,
         "ontology_families": families,
+        "model_provider": model_provider,
     }
+
+
+async def probe_model_provider() -> dict[str, Any]:
+    url = f"{os.getenv('TEST_GENERATION_URL', 'http://test_generation_agent:8001').rstrip('/')}/health"
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            provider = response.json().get("llm_provider")
+        if not isinstance(provider, dict):
+            raise ValueError("test-generation health omitted llm_provider")
+        return provider
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return {"mode": "UNKNOWN", "configured": False, "status": "unavailable"}
 
 
 def _base_graph(fleet: dict[str, Any]) -> dict[str, Any]:

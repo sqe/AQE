@@ -18,6 +18,18 @@ def error_message(error: BaseException) -> str:
     return ": ".join(reversed(messages)) or type(error).__name__
 
 
+def partition_scenarios(
+    scenarios: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    requirements_needed = [
+        scenario
+        for scenario in scenarios
+        if scenario.get("execution_status") == "requirements_needed"
+    ]
+    executable = [scenario for scenario in scenarios if scenario not in requirements_needed]
+    return executable, requirements_needed
+
+
 @workflow.defn
 class QualityEngineeringWorkflow:
     """Durably generate and execute a test run through existing AQE APIs."""
@@ -80,6 +92,36 @@ class QualityEngineeringWorkflow:
                 generation_request["agent_archetype"] = (
                     generation_request.get("agent_archetype") or discovered_agent.get("archetype")
                 )
+            if workflow.patched("requirements-needed-short-circuit-v1"):
+                executable_scenarios, requirements_needed = partition_scenarios(
+                    generation_request["scenarios"]
+                )
+                generation_request = {
+                    **generation_request,
+                    "scenarios": executable_scenarios,
+                    "requirements_needed_scenarios": requirements_needed,
+                }
+                if requirements_needed and not executable_scenarios:
+                    result = {
+                        "successful": False,
+                        "status": "REQUIREMENTS_NEEDED",
+                        "execution_status": "requirements_needed",
+                        "summary": {
+                            "tests": 0,
+                            "passed": 0,
+                            "failed": 0,
+                            "errors": 0,
+                            "requirements_needed": len(requirements_needed),
+                        },
+                        "requirements_needed": requirements_needed,
+                        "error": "Executable skill contract is incomplete; test generation was not attempted.",
+                    }
+                    await record_stage(
+                        "workflow_completed",
+                        status="requirements_needed",
+                        summary=result["summary"],
+                    )
+                    return result
         if request.get("source_repository"):
             await record_stage("source_analysis_started")
             source_analysis = await workflow.execute_activity(

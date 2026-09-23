@@ -460,6 +460,18 @@ function GithubStatus({ github }) {
   );
 }
 
+function ModelProviderStatus({ provider }) {
+  const connected = provider?.status === "connected";
+  return (
+    <section className="github-strip" aria-label="Generation model connectivity">
+      <div className="github-identity"><i className={`status-light ${connected ? "ok" : "bad"}`} /><div><small>GENERATION MODEL</small><strong>{provider?.mode || "checking"}</strong></div></div>
+      <div><small>CONNECTIVITY</small><strong>{provider?.status || "checking"}</strong></div>
+      <div><small>MODEL</small><strong>{provider?.model || "not configured"}</strong></div>
+      <div><small>LATENCY</small><strong>{connected ? `${provider.latency_ms} ms` : "n/a"}</strong></div>
+    </section>
+  );
+}
+
 function KnowledgeStatus({ stats, graph }) {
   const stores = stats?.stores || {};
   const items = [
@@ -668,7 +680,8 @@ function App() {
       if (!agents.length) throw new Error("no healthy configured agents were discovered");
       const normalizeName = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^aqe/, "");
       const matchedRepositoryAgents = new Set();
-      const runs = agents.map((agent) => {
+      const requirementsNeededAgents = [];
+      const runs = agents.flatMap((agent) => {
         const cardUrl = agent.card_url;
         const baseUrl = agent.invocation_url || cardUrl.replace(/\/(agent_card|\.well-known\/agent\.json)\/?$/, "");
         const skills = agent.skills || [];
@@ -678,6 +691,14 @@ function App() {
         const scenarios = agent.scenarios || [];
         const executableScenarios = scenarios.filter((scenario) => scenario.execution_status === "executable");
         const contractGaps = scenarios.filter((scenario) => scenario.execution_status !== "executable");
+        if (!executableScenarios.length) {
+          requirementsNeededAgents.push({
+            name: agent.identity || agent.name,
+            card_url: cardUrl,
+            scenarios: contractGaps,
+          });
+          return [];
+        }
         const run = {
           url: baseUrl,
           agent_card_url: cardUrl,
@@ -702,8 +723,9 @@ function App() {
           run.source_ref = repositoryAgent.source_ref;
           run.source_paths = [repositoryAgent.path.replace(/\/agent\.yaml$/, "")];
         }
-        return run;
+        return [run];
       });
+      if (!runs.length) throw new Error("no agents publish executable scenarios; complete the reported execution contracts first");
       const endpointRequired = repositoryDiscovery.agents.filter(
         (candidate) => !matchedRepositoryAgents.has(`${candidate.repository}:${candidate.path}`) && !candidate.card_url
       );
@@ -719,6 +741,7 @@ function App() {
         missing_semantic_oracles: discovery.summary.missing_oracles,
         repository_agents: repositoryDiscovery.agents.length,
         source_grounded: matchedRepositoryAgents.size,
+        requirements_needed: requirementsNeededAgents,
         endpoint_required: endpointRequired.map((candidate) => ({ repository: candidate.repository, path: candidate.path, name: candidate.name })),
         repository_errors: repositoryDiscovery.errors || [],
       };
@@ -767,6 +790,7 @@ function App() {
         <button className={activeView === "execute" ? "active" : ""} onClick={() => setActiveView("execute")}>03 / EXECUTE</button>
         <button className={activeView === "observe" ? "active" : ""} onClick={() => setActiveView("observe")}>04 / OBSERVE</button>
       </nav>
+      <ModelProviderStatus provider={diagnostics.model_provider} />
       <GithubStatus github={github} />
       <KnowledgeStatus stats={knowledgeStats} graph={graph} />
 

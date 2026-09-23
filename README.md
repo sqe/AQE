@@ -137,6 +137,12 @@ the workflow now fails immediately with a visible configuration error rather
 than timing out. Product RAG data is optional; ontology and scenario grounding
 remain active when no product-knowledge artifact has been ingested.
 
+The dashboard displays the active generation provider, sanitized model name,
+connectivity, and probe latency. The probe validates provider access without
+generating content and never returns the endpoint or API key. Override
+`GEMINI_GENERATION_MODEL` or `GEMINI_EMBEDDING_MODEL` when using a different
+available Gemini model.
+
 The UI polls `GET /v1/qe-runs/<workflow-id>` until completion and shows the
 result or root failure. GitHub source grounding is optional. If used, enter
 `owner/repository` (or a GitHub URL) plus a commit/tag and add that repository to
