@@ -157,6 +157,30 @@ with the system.
 The result is a traceable chain from a source change to tests, immutable images,
 runtime evidence, catalog commits, release approval, and production deployment.
 
+## Why generated tests use a separate branch
+
+`main` owns AQE source code, workflows, and test infrastructure.
+`aqe-generated-tests` owns the continuously updated test product: validated
+generated suites and their metadata. Generated output is not routinely merged
+back into `main`.
+
+A successful candidate run records the exact catalog commits it produced.
+Release promotion requires those commits to exist in the current catalog history
+and requires CI at the catalog head to be green. This links a release to its
+generated verification evidence without mixing model-produced files into the
+application source branch.
+
+Synchronization moves in one direction: catalog tooling changes from `main` may
+be brought into `aqe-generated-tests`; generated catalog commits do not flow into
+`main`. A generated test should enter `main` only through a separate human-reviewed
+PR that deliberately adopts it as a maintained source test.
+
+Catalog history still requires lifecycle management. When a target contract or
+version is retired, obsolete suites must be removed or superseded on the catalog
+branch through a reviewed change. A stale failing suite is a release blocker; it
+must not be ignored, silently skipped, or “fixed” by merging the catalog branch
+into `main`.
+
 ## The value
 
 AQE increases verification throughput without lowering the release bar. Teams
