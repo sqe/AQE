@@ -72,7 +72,7 @@ flowchart LR
     Run --> Classify{Execution classification}
     Classify -->|passed quality gate and pytest| Green[Validated green test]
     Classify -->|failed| Triage{Explicit defect confirmation}
-    Triage -->|assertion failure; no collection/runtime errors| Reproducer[Confirmed reproducer]
+    Triage -->|assertion failure, no collection/runtime errors| Reproducer[Confirmed reproducer]
     Triage -->|test/environment/untriaged| Retain[Evidence only]
     Green --> Publisher[Scoped GitHub catalog publisher]
     Reproducer --> Publisher
@@ -199,7 +199,7 @@ sequenceDiagram
     T->>O: Review candidate + exact RAG/ontology grounding
     O->>R: Persist structured review evidence
     alt Oracle is unavailable
-        T-->>Caller: Workflow failure; unavailable review fails closed
+        T-->>Caller: Workflow failure, unavailable review fails closed
     else Oracle responds
         alt Oracle approves
             O-->>T: APPROVED with citations
@@ -327,7 +327,7 @@ flowchart TD
     Assertion -- Yes --> FindingCatalog[generated-findings/type/agent/version/test.py + metadata]
     FindingCatalog --> FindingCI[CI expects pytest assertion failure]
     FindingCI -->|still fails| Open[Finding remains reproducible]
-    FindingCI -->|passes| Resolved[Signal defect resolved; update catalog]
+    FindingCI -->|passes| Resolved[Signal defect resolved, update catalog]
 ```
 
 ### Runtime and authentication boundary
@@ -425,7 +425,7 @@ sequenceDiagram
     else Test can be repaired without changing expectations
         E->>G: Bounded repair with original oracle preserved
     else Missing invocation or oracle
-        E->>M: Explicit coverage gap; no false pass
+        E->>M: Explicit coverage gap, no false pass
     end
 ```
 
@@ -655,7 +655,7 @@ flowchart TD
     Transient -- No --> Contract{Agent Card or skill mismatch?}
     Contract -- Yes --> Recommend[Report exact missing identity/skill and version evidence]
     Contract -- No --> Infra{Dependency unavailable?}
-    Infra -- Yes --> Block[Keep Argo sync blocked; repair dependency]
+    Infra -- Yes --> Block[Keep Argo sync blocked, repair dependency]
     Infra -- No --> TestFailure{Generated test failure?}
     TestFailure -- Yes --> BoundedRepair[Run bounded non-weakening repair loop]
     BoundedRepair --> Verified{Quality gate and pytest pass?}
