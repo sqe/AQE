@@ -6,6 +6,17 @@ failures, and optionally repairs and re-runs the tests. The public role is the
 **QE orchestrator**; “umbrella agent” and “thick agent” are understandable but
 are not standard architecture terms.
 
+![AQE Automata dashboard showing the live agent and test graph](aqe-automata.png)
+
+_AQE Automata's Observe view. This captured run illustrates the interface, not
+a guarantee about another environment's health or test results._
+
+**Watch the full execution-run demo:** [Agentic Quality Engineering on YouTube](https://youtu.be/A5VcteEc_jE).
+The demo is a visual walkthrough with light background music, no voice
+narration, and no captions.
+Follow the workflow in action, then use the architecture and testing runbooks
+below to reproduce and inspect your own results.
+
 See [Architecture and operating rules](docs/architecture.md) for the complete
 Temporal rules, Mermaid flow diagrams, deployment procedures, BYOA protocol,
 and internal/external agent examples. Use the
